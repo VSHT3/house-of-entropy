@@ -3,7 +3,7 @@
 import { useRef, useEffect } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { PointerLockControls } from "@react-three/drei";
-import { RigidBody, CapsuleCollider, type RapierRigidBody } from "@react-three/rapier";
+import { RigidBody, CapsuleCollider, useRapier, type RapierRigidBody } from "@react-three/rapier";
 import * as THREE from "three";
 import { playerPos } from "./playerState";
 import { isInputLocked, isFlying, useOpenState, useFlying, useArrival } from "./bookStore";
@@ -15,15 +15,36 @@ const SPAWN = hexToWorld(1, 0);
 const SPAWN_YAW = -0.5236 + Math.PI;
 
 const SPEED = 4.5; // m/s walk
+const SPRINT_SPEED = 7.5; // m/s while holding Shift
+const CROUCH_SPEED = 2.0; // m/s while crouched
 const EYE_HEIGHT = 0.7; // camera offset above capsule centre
-const ACCEL = 12; // how fast we ramp toward target velocity (higher = snappier)
+const CROUCH_EYE = 0.1; // lowered camera offset while crouched
+const ACCEL = 12; // ground ramp toward target velocity (higher = snappier)
+const AIR_ACCEL = 2.5; // much weaker steering while airborne -> momentum is preserved
 const CAM_SMOOTH = 18; // camera follow stiffness (higher = tighter to body)
+
+// Snappy, low hop: low launch speed + heavy gravity (GRAVITY_SCALE on the body) make a quick
+// arc whose head peak stays under the 2.6 m doorway lintel.
+const JUMP_VEL = 4.4; // upward launch speed (m/s)
+const GRAVITY_SCALE = 1.7; // extra gravity -> snappy arc, apex stays under the 3.2 m lintel
+const CAP_HALF = 0.5; // capsule half-height
+const CAP_RADIUS = 0.35; // capsule radius
+const GROUND_REACH = 0.18; // how far below the capsule we still count as "grounded"
+
+// Bunny hop: a jump landed within this window after the previous one keeps and boosts
+// horizontal momentum instead of decaying it. No cap — chaining hops accelerates freely.
+const HOP_WINDOW = 0.35; // s — forgiving grace period after landing to chain a hop
+const HOP_BOOST = 1.12; // speed multiplier on a chained hop (compounds across hops)
 
 const keys: Record<string, boolean> = {};
 
 function useKeyboard() {
   useEffect(() => {
-    const down = (e: KeyboardEvent) => (keys[e.code] = true);
+    const down = (e: KeyboardEvent) => {
+      keys[e.code] = true;
+      // Space scrolls the page and Ctrl/Tab are browser-reserved; suppress while playing.
+      if (e.code === "Space") e.preventDefault();
+    };
     const up = (e: KeyboardEvent) => (keys[e.code] = false);
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
@@ -36,6 +57,7 @@ function useKeyboard() {
 
 export function Player() {
   const body = useRef<RapierRigidBody>(null);
+  const { world, rapier } = useRapier();
   const { camera } = useThree();
   const reading = useOpenState() !== null;
   const flying = useFlying();
@@ -65,6 +87,14 @@ export function Player() {
   const camTarget = useRef(new THREE.Vector3());
   const lockRef = useRef<{ lock: () => void } | null>(null);
 
+  // movement state across frames
+  const wasGrounded = useRef(false);
+  const landedAt = useRef(-1); // timestamp of last landing (s)
+  const jumpHeld = useRef(false); // edge-detect the jump key
+  const eyeRef = useRef(EYE_HEIGHT); // smoothed eye height (for crouch)
+  const bobPhase = useRef(0); // head-bob phase, advanced by ground speed
+  const bobAmt = useRef(0); // smoothed bob amplitude (eases in/out with movement)
+
   // Aim the camera at the golden tutorial book once on spawn.
   useEffect(() => {
     camera.rotation.order = "YXZ";
@@ -87,10 +117,12 @@ export function Player() {
     }
   }, [locked]);
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const rb = body.current;
     if (!rb) return;
     const dt = Math.min(delta, 1 / 30); // clamp big frame gaps
+    const now = state.clock.elapsedTime;
+    const frozen = isInputLocked();
 
     // camera-relative horizontal basis
     camera.getWorldDirection(forward.current);
@@ -98,32 +130,105 @@ export function Player() {
     forward.current.normalize();
     right.current.crossVectors(forward.current, UP.current).normalize();
 
+    const v = rb.linvel();
+    const p = rb.translation();
+
+    // --- ground check: cast a short ray straight down from the capsule bottom -------------
+    const origin = { x: p.x, y: p.y - (CAP_HALF + CAP_RADIUS) + 0.02, z: p.z };
+    const ray = new rapier.Ray(origin, { x: 0, y: -1, z: 0 });
+    const hit = world.castRay(ray, GROUND_REACH, true, undefined, undefined, undefined, rb);
+    const grounded = hit !== null;
+
+    // record the moment we touch down (opens the bunny-hop window)
+    if (grounded && !wasGrounded.current) landedAt.current = now;
+    wasGrounded.current = grounded;
+
+    const crouching = !frozen && (keys["ControlLeft"] || keys["KeyC"]);
+    const sprinting = !frozen && !crouching && (keys["ShiftLeft"] || keys["ShiftRight"]);
+    const moveSpeed = crouching ? CROUCH_SPEED : sprinting ? SPRINT_SPEED : SPEED;
+
     // target horizontal velocity from input — frozen while reading a book
     dir.current.set(0, 0, 0);
-    if (!isInputLocked()) {
+    if (!frozen) {
       if (keys["KeyW"]) dir.current.add(forward.current);
       if (keys["KeyS"]) dir.current.sub(forward.current);
       if (keys["KeyD"]) dir.current.add(right.current);
       if (keys["KeyA"]) dir.current.sub(right.current);
-      if (dir.current.lengthSq() > 0) dir.current.normalize().multiplyScalar(SPEED);
+      if (dir.current.lengthSq() > 0) dir.current.normalize().multiplyScalar(moveSpeed);
     }
 
-    // ease current velocity toward target -> acceleration on start, glide on stop
-    const v = rb.linvel();
-    const t = 1 - Math.exp(-ACCEL * dt); // framerate-independent lerp factor
-    const vx = v.x + (dir.current.x - v.x) * t;
-    const vz = v.z + (dir.current.z - v.z) * t;
-    rb.setLinvel({ x: vx, y: v.y, z: vz }, true); // keep gravity on y
+    const entrySpeed = Math.hypot(v.x, v.z); // horizontal speed before any ground decel
+    let vx: number;
+    let vz: number;
+    let vy = v.y;
+    if (grounded) {
+      // crisp control on the ground: lerp horizontal velocity toward the input target
+      const t = 1 - Math.exp(-ACCEL * dt);
+      vx = v.x + (dir.current.x - v.x) * t;
+      vz = v.z + (dir.current.z - v.z) * t;
+    } else {
+      // Airborne: NEVER bleed speed. Keep current momentum and only add a small steering
+      // nudge along the input direction, so hop chains accumulate instead of being lerped
+      // back down to walk speed.
+      vx = v.x;
+      vz = v.z;
+      if (dir.current.lengthSq() > 0) {
+        const inv = 1 / Math.hypot(dir.current.x, dir.current.z);
+        vx += dir.current.x * inv * AIR_ACCEL * dt;
+        vz += dir.current.z * inv * AIR_ACCEL * dt;
+      }
+    }
+
+    // --- jump / bunny hop -----------------------------------------------------------------
+    const wantJump = !frozen && keys["Space"];
+    if (wantJump && !jumpHeld.current && grounded) {
+      vy = JUMP_VEL;
+      // Chained hop: jumping again within the window right after landing preserves and
+      // slightly boosts horizontal speed instead of letting ground friction bleed it off.
+      const chained = landedAt.current >= 0 && now - landedAt.current <= HOP_WINDOW;
+      if (chained) {
+        // Boost from the speed we LANDED with (entrySpeed), not the post-decel value, so the
+        // single grounded frame between hops can't bleed the chain. Uncapped on purpose.
+        const dirLen = Math.hypot(vx, vz);
+        const sp = Math.max(entrySpeed, dirLen);
+        if (sp > 0.3 && dirLen > 1e-4) {
+          const boosted = sp * HOP_BOOST; // well-timed chains keep accelerating
+          vx = (vx / dirLen) * boosted;
+          vz = (vz / dirLen) * boosted;
+        }
+      }
+      landedAt.current = -1; // consume the window
+    }
+    jumpHeld.current = wantJump;
+
+    rb.setLinvel({ x: vx, y: vy, z: vz }, true);
 
     // While the flythrough is running it owns the camera + playerPos — don't fight it.
     if (isFlying()) return;
 
     // smooth camera follow (decouples render from fixed physics step -> no jitter)
-    const p = rb.translation();
     playerPos.x = p.x;
     playerPos.y = p.y;
     playerPos.z = p.z;
-    camTarget.current.set(p.x, p.y + EYE_HEIGHT, p.z);
+    // crouch lowers the eye smoothly
+    const targetEye = crouching ? CROUCH_EYE : EYE_HEIGHT;
+    eyeRef.current += (targetEye - eyeRef.current) * (1 - Math.exp(-12 * dt));
+
+    // head-bob: advance phase with ground speed; amplitude eases with how fast we move and
+    // grows when sprinting. Off while airborne so jumps read clean.
+    const hspeed = Math.hypot(vx, vz);
+    const moving = grounded && hspeed > 0.4;
+    bobPhase.current += hspeed * 1.9 * dt; // step cadence scales with speed
+    const targetBob = moving ? Math.min(hspeed / SPEED, 1.4) * (sprinting ? 0.05 : 0.03) : 0;
+    bobAmt.current += (targetBob - bobAmt.current) * (1 - Math.exp(-8 * dt));
+    const bobY = Math.sin(bobPhase.current * 2) * bobAmt.current; // vertical (double freq)
+    const bobX = Math.cos(bobPhase.current) * bobAmt.current * 0.6; // gentle side sway
+
+    camTarget.current.set(
+      p.x + right.current.x * bobX,
+      p.y + eyeRef.current + bobY,
+      p.z + right.current.z * bobX,
+    );
     const ct = 1 - Math.exp(-CAM_SMOOTH * dt);
     camera.position.lerp(camTarget.current, ct);
   });
@@ -136,6 +241,7 @@ export function Player() {
         mass={1}
         position={[SPAWN[0], 1.0, SPAWN[1]]}
         enabledRotations={[false, false, false]}
+        gravityScale={GRAVITY_SCALE}
         canSleep={false}
         ccd
       >

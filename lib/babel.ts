@@ -18,7 +18,7 @@ export const CHARS_PER_BOOK = CHARS_PER_LINE * LINES_PER_PAGE * PAGES_PER_BOOK; 
 export const HEX_RADIUS = 4.5; // centre to vertex
 export const WALL_HEIGHT = 4.0;
 export const DOORWAY_WIDTH = 1.6;
-export const DOORWAY_HEIGHT = 2.6;
+export const DOORWAY_HEIGHT = 3.2;
 export const WALL_THICKNESS = 0.3;
 
 // --- Hex grid (axial coords q,r) ---
