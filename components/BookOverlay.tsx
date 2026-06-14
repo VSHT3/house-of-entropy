@@ -4,8 +4,33 @@ import { useState, useEffect } from "react";
 import { useOpenState, useFlying, closeBook, turnPage, tutorialSeen } from "./bookStore";
 import { addrToCoordString } from "@/lib/library";
 
-function copy(text: string) {
-  navigator.clipboard?.writeText(text).catch(() => {});
+// Copy with a fallback for non-secure contexts (plain HTTP, e.g. a self-hosted deploy):
+// navigator.clipboard is undefined off HTTPS/localhost, so fall back to a hidden textarea +
+// execCommand. Returns whether the copy appears to have succeeded.
+async function copy(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through to the legacy path */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    ta.style.pointerEvents = "none";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 // Truncate a possibly-enormous BigInt coordinate for display.
@@ -63,7 +88,16 @@ export function FlyingVeil() {
 // DOM overlay shown while a book is open: coordinate / address readout + nav + close.
 export function BookOverlay() {
   const open = useOpenState();
+  const [copied, setCopied] = useState<string | null>(null);
   if (!open) return null;
+
+  const doCopy = async (key: string, text: string) => {
+    const ok = await copy(text);
+    setCopied(ok ? key : `${key}-fail`);
+    setTimeout(() => setCopied((c) => (c === key || c === `${key}-fail` ? null : c)), 1400);
+  };
+  const label = (key: string, base: string) =>
+    copied === key ? "copied!" : copied === `${key}-fail` ? "copy failed" : base;
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 pb-6">
@@ -75,34 +109,30 @@ export function BookOverlay() {
           </>
         ) : (
           <>
-            found “{open.result.query}” · {addrToCoordString(open.result.addrHex)}
+            found “{open.result.query}” · {addrToCoordString(open.result.addrHex)} · page {open.coord.page + 1}/410
           </>
         )}
       </div>
       <div className="pointer-events-auto flex items-center gap-2 text-xs">
-        {open.kind === "coord" && (
-          <>
-            <button onClick={() => turnPage(-2)} className="rounded bg-white/10 px-3 py-1.5 text-white/80 hover:bg-white/20">
-              ← prev
-            </button>
-            <button onClick={() => turnPage(2)} className="rounded bg-white/10 px-3 py-1.5 text-white/80 hover:bg-white/20">
-              next →
-            </button>
-          </>
-        )}
+        <button onClick={() => turnPage(-2)} className="rounded bg-white/10 px-3 py-1.5 text-white/80 hover:bg-white/20">
+          ← prev
+        </button>
+        <button onClick={() => turnPage(2)} className="rounded bg-white/10 px-3 py-1.5 text-white/80 hover:bg-white/20">
+          next →
+        </button>
         {open.kind === "search" && (
           <>
             <button
-              onClick={() => copy("0x" + open.result.addrHex)}
+              onClick={() => doCopy("addr", "0x" + open.result.addrHex)}
               className="rounded bg-white/10 px-3 py-1.5 text-white/80 hover:bg-white/20"
             >
-              copy address
+              {label("addr", "copy address")}
             </button>
             <button
-              onClick={() => copy(addrToCoordString(open.result.addrHex))}
+              onClick={() => doCopy("coords", addrToCoordString(open.result.addrHex))}
               className="rounded bg-white/10 px-3 py-1.5 text-white/80 hover:bg-white/20"
             >
-              copy coords
+              {label("coords", "copy coords")}
             </button>
           </>
         )}

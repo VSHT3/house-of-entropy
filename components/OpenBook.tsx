@@ -36,24 +36,38 @@ export function OpenBook() {
     };
     if (open.kind === "coord" && isTutorialBook(open.coord)) {
       const t = tutorialPages();
-      return { left: t.left.split("\n"), right: t.right.split("\n"), hits: new Set<number>() };
+      const ll = t.left.split("\n");
+      const rl = t.right.split("\n");
+      return { left: ll, right: rl, leftMark: ll.map(() => ""), rightMark: rl.map(() => "") };
     }
-    const raw = open.kind === "coord" ? pageTextBig(open.coord) : open.result.text;
+    // Both kinds regenerate from the (BigInt) coordinate, so flipping a search book works the
+    // same as a normal book. For a search, the manufactured query page IS pageTextBig(coord).
+    const raw = pageTextBig(open.coord);
     const lines = reflow(raw);
-    // Reflow is char-for-char identity on the flat page, so a raw char index maps to reflow
-    // row = floor(idx / PAGE_COLS). Mark every row the query touches.
-    const hits = new Set<number>();
-    if (open.kind === "search") {
-      for (const idx of open.result.spans) hits.add(Math.floor(idx / PAGE_COLS));
+    // Per-line highlight MASK: a parallel string where only the exact query columns carry the
+    // query character and everything else is a space. Reflow is char-for-char identity on the
+    // flat page, so raw index i -> reflow row floor(i/PAGE_COLS), col i%PAGE_COLS. The mask is
+    // drawn as a gold box behind exactly those columns. Only shown on the page the query lives
+    // on, so flipping to other pages of the book shows them un-highlighted.
+    const mark: string[] = lines.map((ln) => " ".repeat(ln.length));
+    if (open.kind === "search" && open.coord.page === open.homePage) {
+      for (const idx of open.result.spans) {
+        const row = Math.floor(idx / PAGE_COLS);
+        const col = idx % PAGE_COLS;
+        const m = mark[row];
+        if (m === undefined) continue;
+        mark[row] = m.slice(0, col) + open.result.text[idx] + m.slice(col + 1);
+      }
     }
     return {
       left: lines.slice(0, PAGE_ROWS),
       right: lines.slice(PAGE_ROWS, PAGE_ROWS * 2),
-      hits,
+      leftMark: mark.slice(0, PAGE_ROWS),
+      rightMark: mark.slice(PAGE_ROWS, PAGE_ROWS * 2),
     };
   }, [open]);
 
-  // Keyboard: arrows flip (coord books only), Esc closes.
+  // Keyboard: arrows flip pages (coord + search books), Esc closes.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -98,37 +112,56 @@ export function OpenBook() {
         <meshBasicMaterial color="#e8e0cf" {...onTop} />
       </mesh>
 
-      {/* page text — one <Text> per line so query lines can be tinted + back-lit */}
-      <PageLines lines={text.left} hits={text.hits} rowBase={0} x={-(PAGE_W + 0.015) + 0.02} />
-      <PageLines lines={text.right} hits={text.hits} rowBase={PAGE_ROWS} x={0.015 + 0.02} />
+      {/* page text — one <Text> per line; query glyphs get a gold box behind them */}
+      <PageLines lines={text.left} marks={text.leftMark} x={-(PAGE_W + 0.015) + 0.02} />
+      <PageLines lines={text.right} marks={text.rightMark} x={0.015 + 0.02} />
     </group>
   );
 }
 
 const LINE_STEP = PAGE_FONT * 1.18; // vertical advance per line (matches lineHeight)
 const TOP = PAGE_H / 2 - 0.02;
+const ADV = PAGE_FONT * 0.6; // JetBrains Mono advance width (600/1000 em) — exact in monospace
+const MONO = "/mono.woff";
 
-// Render a half-page line-by-line. Rows whose reflow index is in `hits` (query lines) get an
-// accent colour and a faint highlight strip behind them.
-function PageLines({ lines, hits, rowBase, x }: { lines: string[]; hits: Set<number>; rowBase: number; x: number }) {
+// Contiguous runs of non-space columns in a mask line -> [startCol, length].
+function runsOf(mark: string): [number, number][] {
+  const runs: [number, number][] = [];
+  let s = -1;
+  for (let i = 0; i <= mark.length; i++) {
+    const on = i < mark.length && mark[i] !== " ";
+    if (on && s < 0) s = i;
+    else if (!on && s >= 0) { runs.push([s, i - s]); s = -1; }
+  }
+  return runs;
+}
+
+// Render a half-page line-by-line in a monospace font. For each query run, draw a gold box
+// behind exactly those columns (column math is exact because the font is monospace).
+function PageLines({ lines, marks, x }: { lines: string[]; marks: string[]; x: number }) {
   return (
     <>
       {lines.map((ln, i) => {
-        const hit = hits.has(rowBase + i);
         const y = TOP - i * LINE_STEP;
+        const runs = marks[i] ? runsOf(marks[i]) : [];
         return (
           <group key={i}>
-            {hit && ln.trim().length > 0 && (
-              <mesh position={[x + PAGE_W / 2 - 0.025, y - PAGE_FONT * 0.45, 0.038]} renderOrder={1000}>
-                <planeGeometry args={[PAGE_W - 0.04, PAGE_FONT * 1.12]} />
-                <meshBasicMaterial color="#f4d98b" depthTest={false} depthWrite={false} transparent opacity={0.7} />
+            {runs.map(([col, len], k) => (
+              <mesh
+                key={k}
+                position={[x + (col + len / 2) * ADV, y - PAGE_FONT * 0.5, 0.038]}
+                renderOrder={1000}
+              >
+                <planeGeometry args={[len * ADV, PAGE_FONT * 1.05]} />
+                <meshBasicMaterial color="#f4d98b" depthTest={false} depthWrite={false} transparent opacity={0.8} />
               </mesh>
-            )}
+            ))}
             <Text
               position={[x, y, 0.04]}
               renderOrder={1001}
+              font={MONO}
               fontSize={PAGE_FONT}
-              color={hit ? "#5a3a12" : "#241c12"}
+              color="#241c12"
               anchorX="left"
               anchorY="top"
               textAlign="left"

@@ -235,14 +235,20 @@ function wrapToLines(query: string, width: number): string[] {
   return lines;
 }
 
-// Lay the query in as clean word-wrapped lines starting at line 3, then turn the finished
-// page into its (reversible) address. The `chars` array must already be filled with the
-// chosen background (noise or words).
+// The open-book spread only renders the first VISIBLE_LINES of the 80-char page (the rest of
+// the page falls below the two visible half-pages). Keep the query block inside that window so
+// every search lands somewhere the reader can actually see and highlight. Must stay in sync
+// with OpenBook's PAGE_ROWS * 2 * PAGE_COLS / CHARS_PER_LINE (= 60 * 40 / 80 = 30).
+const VISIBLE_LINES = 30;
+
+// Lay the query in as clean word-wrapped lines at a query-derived start line, then turn the
+// finished page into its (reversible) address. The `chars` array must already be filled with
+// the chosen background (noise or words).
 function finishPage(chars: string[], query: string, seed: bigint): SearchResult {
   const wrapped = wrapToLines(query, CHARS_PER_LINE);
   // Place the block at a query-derived line so different searches land at different spots,
-  // while staying deterministic. Clamp so the whole wrapped block fits on the page.
-  const maxStart = Math.max(0, LINES_PER_PAGE - wrapped.length);
+  // while staying deterministic. Clamp so the whole wrapped block fits in the VISIBLE window.
+  const maxStart = Math.max(0, VISIBLE_LINES - wrapped.length);
   const startLine = maxStart === 0 ? 0 : Number(seed % BigInt(maxStart + 1));
   const spans: number[] = [];
   for (let li = 0; li < wrapped.length && startLine + li < LINES_PER_PAGE; li++) {

@@ -90,7 +90,6 @@ export function Player() {
   // movement state across frames
   const wasGrounded = useRef(false);
   const landedAt = useRef(-1); // timestamp of last landing (s)
-  const jumpHeld = useRef(false); // edge-detect the jump key
   const eyeRef = useRef(EYE_HEIGHT); // smoothed eye height (for crouch)
   const bobPhase = useRef(0); // head-bob phase, advanced by ground speed
   const bobAmt = useRef(0); // smoothed bob amplitude (eases in/out with movement)
@@ -157,19 +156,49 @@ export function Player() {
       if (dir.current.lengthSq() > 0) dir.current.normalize().multiplyScalar(moveSpeed);
     }
 
-    const entrySpeed = Math.hypot(v.x, v.z); // horizontal speed before any ground decel
+    // Decide whether we jump THIS frame, before touching horizontal velocity. Holding Space
+    // keeps hopping (auto-jump on every ground contact) — that's what lets a chain happen at
+    // all; requiring a release between hops made the window practically impossible to hit.
+    const wantJump = !frozen && keys["Space"];
+    const willJump = wantJump && grounded;
+    const chained = willJump && landedAt.current >= 0 && now - landedAt.current <= HOP_WINDOW;
+
+    // entry (pre-decel) horizontal velocity — the momentum we landed with
+    const entrySpeed = Math.hypot(v.x, v.z);
+
     let vx: number;
     let vz: number;
     let vy = v.y;
-    if (grounded) {
+
+    if (willJump) {
+      // A jump leaves the ground immediately, so DON'T apply ground decel this frame. Carry the
+      // entry velocity straight through (optionally boosted) — the touch-down frame can't bleed
+      // the chain. If there's no real momentum yet, fall back to the input direction.
+      vy = JUMP_VEL;
+      let dx = v.x;
+      let dz = v.z;
+      if (entrySpeed < 0.3 && dir.current.lengthSq() > 0) {
+        dx = dir.current.x;
+        dz = dir.current.z;
+      }
+      const len = Math.hypot(dx, dz);
+      if (len > 1e-4) {
+        // chained hop grows from at least walk speed; a lone jump just preserves momentum.
+        const boosted = chained ? Math.max(entrySpeed, SPEED) * HOP_BOOST : Math.max(entrySpeed, len);
+        vx = (dx / len) * boosted;
+        vz = (dz / len) * boosted;
+      } else {
+        vx = v.x;
+        vz = v.z;
+      }
+      landedAt.current = -1; // consume the window so the next contact reopens it
+    } else if (grounded) {
       // crisp control on the ground: lerp horizontal velocity toward the input target
       const t = 1 - Math.exp(-ACCEL * dt);
       vx = v.x + (dir.current.x - v.x) * t;
       vz = v.z + (dir.current.z - v.z) * t;
     } else {
-      // Airborne: NEVER bleed speed. Keep current momentum and only add a small steering
-      // nudge along the input direction, so hop chains accumulate instead of being lerped
-      // back down to walk speed.
+      // Airborne: NEVER bleed speed. Keep momentum, only add a small steering nudge.
       vx = v.x;
       vz = v.z;
       if (dir.current.lengthSq() > 0) {
@@ -178,28 +207,6 @@ export function Player() {
         vz += dir.current.z * inv * AIR_ACCEL * dt;
       }
     }
-
-    // --- jump / bunny hop -----------------------------------------------------------------
-    const wantJump = !frozen && keys["Space"];
-    if (wantJump && !jumpHeld.current && grounded) {
-      vy = JUMP_VEL;
-      // Chained hop: jumping again within the window right after landing preserves and
-      // slightly boosts horizontal speed instead of letting ground friction bleed it off.
-      const chained = landedAt.current >= 0 && now - landedAt.current <= HOP_WINDOW;
-      if (chained) {
-        // Boost from the speed we LANDED with (entrySpeed), not the post-decel value, so the
-        // single grounded frame between hops can't bleed the chain. Uncapped on purpose.
-        const dirLen = Math.hypot(vx, vz);
-        const sp = Math.max(entrySpeed, dirLen);
-        if (sp > 0.3 && dirLen > 1e-4) {
-          const boosted = sp * HOP_BOOST; // well-timed chains keep accelerating
-          vx = (vx / dirLen) * boosted;
-          vz = (vz / dirLen) * boosted;
-        }
-      }
-      landedAt.current = -1; // consume the window
-    }
-    jumpHeld.current = wantJump;
 
     rb.setLinvel({ x: vx, y: vy, z: vz }, true);
 

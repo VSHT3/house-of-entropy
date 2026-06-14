@@ -16,7 +16,10 @@ export let arrival: { nonce: number; lq: number; lr: number } = { nonce: 0, lq: 
 //  - a search result (arbitrary page text)
 type OpenState =
   | { kind: "coord"; coord: PageCoordBig }
-  | { kind: "search"; result: SearchResult }
+  // A search opens the book that contains the manufactured page. `coord` is that page's real
+  // (recovered) coordinate so arrow keys can flip through the rest of the book; `homePage` is
+  // the page index where the query actually lives (highlight only shows there).
+  | { kind: "search"; result: SearchResult; coord: PageCoordBig; homePage: number }
   | null;
 
 let current: OpenState = null;
@@ -42,10 +45,17 @@ export function closeBook() {
 }
 
 export function turnPage(delta: number) {
-  if (!current || current.kind !== "coord") return;
-  const page = Math.max(0, Math.min(409, current.coord.page + delta));
-  current = { kind: "coord", coord: { ...current.coord, page } };
-  emit();
+  if (!current) return;
+  if (current.kind === "coord") {
+    const page = Math.max(0, Math.min(409, current.coord.page + delta));
+    current = { kind: "coord", coord: { ...current.coord, page } };
+    emit();
+  } else if (current.kind === "search") {
+    // Flip through the book the search landed in; OpenBook regenerates each page from coord.
+    const page = Math.max(0, Math.min(409, current.coord.page + delta));
+    current = { ...current, coord: { ...current.coord, page } };
+    emit();
+  }
 }
 
 // --- search flythrough ------------------------------------------------------
@@ -80,7 +90,9 @@ export function finishFlythrough() {
       }
     }
     arrival = { nonce: arrival.nonce + 1, lq, lr };
-    current = { kind: "search", result: pending };
+    // c includes the real page index where the query lives; open the book there so arrow keys
+    // can flip the rest of the book and we know which page carries the highlight.
+    current = { kind: "search", result: pending, coord: c, homePage: c.page };
   }
   pending = null;
   tutorialSeen = true;
