@@ -192,10 +192,23 @@ export function normalizeQuery(s: string): string {
 
 export type SearchResult = {
   text: string; // the full 3200-char page that contains the query
-  offset: number; // char index where the query starts
+  offset: number; // char index where the query starts (first stamped char)
+  spans: number[]; // every raw char index occupied by the query (for exact highlighting)
   query: string; // the normalised query
   addrHex: string; // the page address as a hex string (the "where" — usually astronomically large)
 };
+
+// Hash a normalised query into a nonzero 64-bit LCG seed (FNV-1a, then salted per mode).
+// Same query → same seed → same background, but distinct queries diverge. `salt` keeps the
+// noise and word modes visually distinct for an identical query.
+function seedFrom(query: string, salt: bigint): bigint {
+  const M64 = (1n << 64n) - 1n;
+  let h = (0xcbf29ce484222325n ^ salt) & M64;
+  for (let i = 0; i < query.length; i++) {
+    h = ((h ^ BigInt(query.charCodeAt(i))) * 0x100000001b3n) & M64;
+  }
+  return h === 0n ? 1n : h;
+}
 
 // "Contains" search: build a page that CONTAINS the query embedded in (space) noise at a
 // deterministic offset, then invert to the address that produces exactly that page.
@@ -225,18 +238,25 @@ function wrapToLines(query: string, width: number): string[] {
 // Lay the query in as clean word-wrapped lines starting at line 3, then turn the finished
 // page into its (reversible) address. The `chars` array must already be filled with the
 // chosen background (noise or words).
-function finishPage(chars: string[], query: string): SearchResult {
-  const startLine = 3;
+function finishPage(chars: string[], query: string, seed: bigint): SearchResult {
   const wrapped = wrapToLines(query, CHARS_PER_LINE);
+  // Place the block at a query-derived line so different searches land at different spots,
+  // while staying deterministic. Clamp so the whole wrapped block fits on the page.
+  const maxStart = Math.max(0, LINES_PER_PAGE - wrapped.length);
+  const startLine = maxStart === 0 ? 0 : Number(seed % BigInt(maxStart + 1));
+  const spans: number[] = [];
   for (let li = 0; li < wrapped.length && startLine + li < LINES_PER_PAGE; li++) {
     const base = (startLine + li) * CHARS_PER_LINE;
     const ln = wrapped[li];
-    for (let c = 0; c < ln.length; c++) chars[base + c] = ln[c];
+    for (let c = 0; c < ln.length; c++) {
+      chars[base + c] = ln[c];
+      spans.push(base + c);
+    }
   }
   const text = chars.join("");
   const index = textToIndex(text);
   const addr = (A_INV * (((index - C) % MOD) + MOD)) % MOD;
-  return { text, offset: startLine * CHARS_PER_LINE, query, addrHex: addr.toString(16) };
+  return { text, offset: startLine * CHARS_PER_LINE, spans, query, addrHex: addr.toString(16) };
 }
 
 // Background = pure deterministic noise (the classic Babel look).
@@ -244,12 +264,13 @@ export function containsSearch(raw: string): SearchResult | null {
   const query = normalizeQuery(raw);
   if (query.length === 0) return null;
   const chars = new Array<string>(PAGE_LEN);
-  let x = 0x9e3779b9n;
+  const seed = seedFrom(query, 0x9e3779b9n);
+  let x = seed;
   for (let i = 0; i < PAGE_LEN; i++) {
     x = (x * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n);
     chars[i] = ALPHABET[Number((x >> 33n) % BASE)];
   }
-  return finishPage(chars, query);
+  return finishPage(chars, query, seed);
 }
 
 // Background = plausible English words separated by spaces/punctuation.
@@ -257,7 +278,8 @@ export function containsSearchWords(raw: string): SearchResult | null {
   const query = normalizeQuery(raw);
   if (query.length === 0) return null;
   const chars = new Array<string>(PAGE_LEN).fill(" ");
-  let x = 0xc2b2ae3dn;
+  const seed = seedFrom(query, 0xc2b2ae3dn);
+  let x = seed;
   const rnd = () => {
     x = (x * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n);
     return Number(x >> 33n);
@@ -272,7 +294,7 @@ export function containsSearchWords(raw: string): SearchResult | null {
       chars[pos] = ALPHABET.indexOf(ch) >= 0 ? ch : " ";
     }
   }
-  return finishPage(chars, query);
+  return finishPage(chars, query, seed);
 }
 
 // Recover the full BigInt coordinate (true q,r, possibly enormous) from an address hex.
@@ -297,7 +319,7 @@ export function pageFromAddrHex(hex: string): SearchResult | null {
   if (!/^[0-9a-f]+$/i.test(clean)) return null;
   const addr = BigInt("0x" + clean) % MOD;
   const index = (A * addr + C) % MOD;
-  return { text: indexToText(index), offset: -1, query: "", addrHex: addr.toString(16) };
+  return { text: indexToText(index), offset: -1, spans: [], query: "", addrHex: addr.toString(16) };
 }
 
 // The full coordinate of a search result, as a display string. The address is usually far

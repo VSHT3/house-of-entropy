@@ -22,7 +22,8 @@ export function OpenBook() {
   const group = useRef<THREE.Group>(null);
 
   // Build the two visible half-pages from whichever source is open.
-  // For a search result we also locate the query so it can be highlighted.
+  // For a search result we also locate which reflowed lines hold the query so they can be
+  // highlighted (computed from exact char indices — no regex, so spaces/punctuation are safe).
   const text = useMemo(() => {
     if (!open) return null;
     // Reflow the raw page (80-char lines) into narrower PAGE_COLS lines so the spread reads
@@ -35,13 +36,20 @@ export function OpenBook() {
     };
     if (open.kind === "coord" && isTutorialBook(open.coord)) {
       const t = tutorialPages();
-      return { left: t.left, right: t.right };
+      return { left: t.left.split("\n"), right: t.right.split("\n"), hits: new Set<number>() };
     }
     const raw = open.kind === "coord" ? pageTextBig(open.coord) : open.result.text;
     const lines = reflow(raw);
+    // Reflow is char-for-char identity on the flat page, so a raw char index maps to reflow
+    // row = floor(idx / PAGE_COLS). Mark every row the query touches.
+    const hits = new Set<number>();
+    if (open.kind === "search") {
+      for (const idx of open.result.spans) hits.add(Math.floor(idx / PAGE_COLS));
+    }
     return {
-      left: lines.slice(0, PAGE_ROWS).join("\n"),
-      right: lines.slice(PAGE_ROWS, PAGE_ROWS * 2).join("\n"),
+      left: lines.slice(0, PAGE_ROWS),
+      right: lines.slice(PAGE_ROWS, PAGE_ROWS * 2),
+      hits,
     };
   }, [open]);
 
@@ -90,34 +98,48 @@ export function OpenBook() {
         <meshBasicMaterial color="#e8e0cf" {...onTop} />
       </mesh>
 
-      {/* page text — anchored top-left of each page, sized so 80×20 fills the page */}
-      <Text
-        position={[-(PAGE_W + 0.015) + 0.02, PAGE_H / 2 - 0.02, 0.04]}
-        renderOrder={1001}
-        fontSize={PAGE_FONT}
-        color="#241c12"
-        anchorX="left"
-        anchorY="top"
-        textAlign="left"
-        lineHeight={1.18}
-        material-depthTest={false}
-      >
-        {text.left}
-      </Text>
-
-      <Text
-        position={[0.015 + 0.02, PAGE_H / 2 - 0.02, 0.04]}
-        renderOrder={1001}
-        fontSize={PAGE_FONT}
-        color="#241c12"
-        anchorX="left"
-        anchorY="top"
-        textAlign="left"
-        lineHeight={1.18}
-        material-depthTest={false}
-      >
-        {text.right}
-      </Text>
+      {/* page text — one <Text> per line so query lines can be tinted + back-lit */}
+      <PageLines lines={text.left} hits={text.hits} rowBase={0} x={-(PAGE_W + 0.015) + 0.02} />
+      <PageLines lines={text.right} hits={text.hits} rowBase={PAGE_ROWS} x={0.015 + 0.02} />
     </group>
+  );
+}
+
+const LINE_STEP = PAGE_FONT * 1.18; // vertical advance per line (matches lineHeight)
+const TOP = PAGE_H / 2 - 0.02;
+
+// Render a half-page line-by-line. Rows whose reflow index is in `hits` (query lines) get an
+// accent colour and a faint highlight strip behind them.
+function PageLines({ lines, hits, rowBase, x }: { lines: string[]; hits: Set<number>; rowBase: number; x: number }) {
+  return (
+    <>
+      {lines.map((ln, i) => {
+        const hit = hits.has(rowBase + i);
+        const y = TOP - i * LINE_STEP;
+        return (
+          <group key={i}>
+            {hit && ln.trim().length > 0 && (
+              <mesh position={[x + PAGE_W / 2 - 0.025, y - PAGE_FONT * 0.45, 0.038]} renderOrder={1000}>
+                <planeGeometry args={[PAGE_W - 0.04, PAGE_FONT * 1.12]} />
+                <meshBasicMaterial color="#f4d98b" depthTest={false} depthWrite={false} transparent opacity={0.7} />
+              </mesh>
+            )}
+            <Text
+              position={[x, y, 0.04]}
+              renderOrder={1001}
+              fontSize={PAGE_FONT}
+              color={hit ? "#5a3a12" : "#241c12"}
+              anchorX="left"
+              anchorY="top"
+              textAlign="left"
+              lineHeight={1.18}
+              material-depthTest={false}
+            >
+              {ln}
+            </Text>
+          </group>
+        );
+      })}
+    </>
   );
 }
