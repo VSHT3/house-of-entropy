@@ -23,7 +23,7 @@ There is no test runner. Correctness of the math (hex grid, page bijection) is v
 
 - **`reactStrictMode: false`** in `next.config.ts` is load-bearing. StrictMode double-mounts effects, which makes R3F create/destroy the WebGL context twice → "THREE.WebGLRenderer: Context Lost" (black screen + sad-face). Do not re-enable it.
 - **`tsconfig` target is ES2020** — required for BigInt literals (`0n`) used by the page engine.
-- The page engine uses **BigInt over a ~4400-digit modulus**. `pageText()` is ~4ms. NEVER call it per-frame — only on user action (clicking a book, flipping a page).
+- The page engine uses **BigInt over a 4942-digit modulus (35^3200)**. `pageText()` is ~4ms. NEVER call it per-frame — only on user action (clicking a book, flipping a page).
 - R3F components are client-only; `Scene` and DOM overlays are imported via `next/dynamic` with `ssr: false`.
 
 ## Architecture
