@@ -7,6 +7,7 @@ import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { HexGrid } from "./HexGrid";
 import { Player } from "./Player";
+import { RemoteAvatars } from "./RemoteAvatars";
 import { OpenBook } from "./OpenBook";
 import { FlyThrough } from "./FlyThrough";
 import { WALL_HEIGHT } from "@/lib/babel";
@@ -40,6 +41,7 @@ export function Scene() {
       <Physics gravity={[0, -9.81, 0]} debug={DEBUG}>
         <HexGrid />
         {DEBUG ? <OrbitControls /> : <Player />}
+        {!DEBUG && <RemoteAvatars />}
       </Physics>
 
       <OpenBook />

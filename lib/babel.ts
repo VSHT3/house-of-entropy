@@ -41,6 +41,26 @@ export function hexToWorld(q: number, r: number): [number, number] {
   return [q * B0[0] + r * B1[0], q * B0[1] + r * B1[1]];
 }
 
+// Nearest hex (q,r) to a world (x,z) — invert the axial basis, round in cube space.
+// Inverse of hexToWorld. Used to derive the local hex the player stands in (HexGrid culling,
+// and the multiplayer send-side to compute the true coord + intra-hex offset).
+export function worldToHex(x: number, z: number): [number, number] {
+  // basis from hexToWorld: solve [B0 B1] * [q r]^T = [x z]^T
+  const [b0x, b0z] = hexToWorld(1, 0);
+  const [b1x, b1z] = hexToWorld(0, 1);
+  const det = b0x * b1z - b1x * b0z;
+  const qf = (x * b1z - z * b1x) / det;
+  const rf = (b0x * z - b0z * x) / det;
+  // cube rounding for hex grids
+  const sf = -qf - rf;
+  let rq = Math.round(qf), rr = Math.round(rf);
+  const rs = Math.round(sf);
+  const dq = Math.abs(rq - qf), dr = Math.abs(rr - rf), ds = Math.abs(rs - sf);
+  if (dq > dr && dq > ds) rq = -rr - rs;
+  else if (dr > ds) rr = -rq - rs;
+  return [rq, rr];
+}
+
 // Axial step taken when leaving through wall i (verified: shared edge gap == 0).
 export const WALL_STEP: Record<number, [number, number]> = {
   0: [1, 0],

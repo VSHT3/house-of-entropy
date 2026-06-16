@@ -50,7 +50,7 @@ export function StartHint() {
   return (
     <div className="pointer-events-none absolute left-1/2 top-20 -translate-x-1/2 text-center">
       <div className="rounded-md bg-black/40 px-4 py-2 text-sm tracking-wide text-amber-200/90 backdrop-blur-sm">
-        Look for the <span className="font-semibold text-amber-300">golden book</span> ahead — click it to begin.
+        The halls go on without end. A <span className="font-semibold text-amber-300">golden book</span> waits ahead — open it to begin.
       </div>
     </div>
   );

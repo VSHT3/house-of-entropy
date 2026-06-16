@@ -7,6 +7,7 @@ import { RigidBody, CapsuleCollider, useRapier, type RapierRigidBody } from "@re
 import * as THREE from "three";
 import { playerPos } from "./playerState";
 import { isInputLocked, isFlying, isFreeFly, toggleFreeFly, useOpenState, useFlying, useFreeFly, useArrival } from "./bookStore";
+import { isChatFocused } from "@/lib/net";
 import { hexToWorld } from "@/lib/babel";
 
 // Spawn in a ring room, not a sealed centre. Hex (1,0) is a ring hex.
@@ -43,6 +44,8 @@ const keys: Record<string, boolean> = {};
 function useKeyboard() {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      // While typing in chat, let keystrokes reach the input and don't record movement.
+      if (isChatFocused()) return;
       keys[e.code] = true;
       // Space scrolls the page and Ctrl/Tab are browser-reserved; suppress while playing.
       if (e.code === "Space") e.preventDefault();
@@ -126,7 +129,7 @@ export function Player() {
     if (!rb) return;
     const dt = Math.min(delta, 1 / 30); // clamp big frame gaps
     const now = state.clock.elapsedTime;
-    const frozen = isInputLocked();
+    const frozen = isInputLocked() || isChatFocused();
 
     // camera-relative horizontal basis
     camera.getWorldDirection(forward.current);

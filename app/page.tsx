@@ -21,6 +21,12 @@ const SearchBar = dynamic(() => import("@/components/SearchBar").then((m) => m.S
 const FlyButton = dynamic(() => import("@/components/BookOverlay").then((m) => m.FlyButton), {
   ssr: false,
 });
+const NetSync = dynamic(() => import("@/components/NetSync").then((m) => m.NetSync), {
+  ssr: false,
+});
+const ChatOverlay = dynamic(() => import("@/components/ChatOverlay").then((m) => m.ChatOverlay), {
+  ssr: false,
+});
 
 export default function Home() {
   return (
@@ -31,8 +37,8 @@ export default function Home() {
       <div className="pointer-events-none absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/60" />
 
       {/* controls hint */}
-      <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 text-center text-xs tracking-widest text-white/40">
-        CLICK TO ENTER · WASD MOVE · MOUSE LOOK · F FLY · CLICK A BOOK TO READ · ESC RELEASE
+      <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 text-center text-[11px] tracking-[0.2em] text-white/35">
+        WASD WALK · MOUSE LOOK · SPACE JUMP · SHIFT RUN · CLICK A BOOK · / SEARCH · ENTER CHAT · ESC RELEASE
       </div>
 
       <StartHint />
@@ -40,6 +46,10 @@ export default function Home() {
       <SearchBar />
       <FlyButton />
       <BookOverlay />
+
+      {/* multiplayer */}
+      <NetSync />
+      <ChatOverlay />
     </main>
   );
 }

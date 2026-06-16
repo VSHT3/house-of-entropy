@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "relay": "node server/relay.mjs",
+    "relay:install": "npm --prefix server install",
+    "dev:all": "concurrently -n next,relay -c blue,green \"npm run dev\" \"npm run relay\""
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -19,6 +22,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "concurrently": "^9.1.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

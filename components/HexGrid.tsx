@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { HexRoom } from "./HexRoom";
-import { hexToWorld, neighborOf, isCenterBig, HEX_STEP } from "@/lib/babel";
+import { hexToWorld, worldToHex, neighborOf, isCenterBig, HEX_STEP } from "@/lib/babel";
 import { playerPos } from "./playerState";
 import { trueCoord, useOrigin } from "./worldStore";
 
@@ -35,23 +35,6 @@ function hexesInRange(cq: number, cr: number, ring: number): [number, number][] 
     frontier = next;
   }
   return out;
-}
-
-// Nearest hex (q,r) to a world (x,z) — invert the axial basis, round in cube space.
-function worldToHex(x: number, z: number): [number, number] {
-  // basis from hexToWorld: solve [B0 B1] * [q r]^T = [x z]^T
-  const [b0x, b0z] = hexToWorld(1, 0);
-  const [b1x, b1z] = hexToWorld(0, 1);
-  const det = b0x * b1z - b1x * b0z;
-  const qf = (x * b1z - z * b1x) / det;
-  const rf = (b0x * z - b0z * x) / det;
-  // cube rounding for hex grids
-  const sf = -qf - rf;
-  let rq = Math.round(qf), rr = Math.round(rf), rs = Math.round(sf);
-  const dq = Math.abs(rq - qf), dr = Math.abs(rr - rf), ds = Math.abs(rs - sf);
-  if (dq > dr && dq > ds) rq = -rr - rs;
-  else if (dr > ds) rr = -rq - rs;
-  return [rq, rr];
 }
 
 export function HexGrid() {
