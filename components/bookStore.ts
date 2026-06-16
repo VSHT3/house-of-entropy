@@ -24,6 +24,7 @@ type OpenState =
 
 let current: OpenState = null;
 let flying = false; // true during the search "flythrough" travel animation
+let freeFly = false; // noclip free-fly: detach gravity/collision, roam the camera with WASD+QE
 let pending: SearchResult | null = null; // result to reveal when the flythrough ends
 const listeners = new Set<() => void>();
 
@@ -103,6 +104,20 @@ export function isFlying(): boolean {
   return flying;
 }
 
+// --- free-fly (noclip) ------------------------------------------------------
+
+// Toggle noclip free-fly. Closing a book stays independent; we just flip the flag and let
+// <Player> swap to fly physics. No-op while a search flythrough is mid-animation.
+export function toggleFreeFly() {
+  if (flying) return;
+  freeFly = !freeFly;
+  emit();
+}
+
+export function isFreeFly(): boolean {
+  return freeFly;
+}
+
 // --- reads ------------------------------------------------------------------
 
 export function isBookOpen(): boolean {
@@ -124,6 +139,10 @@ export function useOpenState(): OpenState {
 
 export function useFlying(): boolean {
   return useSyncExternalStore(subscribe, () => flying, () => flying);
+}
+
+export function useFreeFly(): boolean {
+  return useSyncExternalStore(subscribe, () => freeFly, () => freeFly);
 }
 
 export function useArrival() {

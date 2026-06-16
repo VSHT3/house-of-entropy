@@ -6,7 +6,7 @@ import { PointerLockControls } from "@react-three/drei";
 import { RigidBody, CapsuleCollider, useRapier, type RapierRigidBody } from "@react-three/rapier";
 import * as THREE from "three";
 import { playerPos } from "./playerState";
-import { isInputLocked, isFlying, useOpenState, useFlying, useArrival } from "./bookStore";
+import { isInputLocked, isFlying, isFreeFly, toggleFreeFly, useOpenState, useFlying, useFreeFly, useArrival } from "./bookStore";
 import { hexToWorld } from "@/lib/babel";
 
 // Spawn in a ring room, not a sealed centre. Hex (1,0) is a ring hex.
@@ -16,6 +16,8 @@ const SPAWN_YAW = -0.5236 + Math.PI;
 
 const SPEED = 4.5; // m/s walk
 const SPRINT_SPEED = 7.5; // m/s while holding Shift
+const FLY_SPEED = 9.0; // m/s noclip fly
+const FLY_SPRINT = 22.0; // m/s noclip fly while holding Shift
 const CROUCH_SPEED = 2.0; // m/s while crouched
 const EYE_HEIGHT = 0.7; // camera offset above capsule centre
 const CROUCH_EYE = 0.1; // lowered camera offset while crouched
@@ -44,6 +46,8 @@ function useKeyboard() {
       keys[e.code] = true;
       // Space scrolls the page and Ctrl/Tab are browser-reserved; suppress while playing.
       if (e.code === "Space") e.preventDefault();
+      // F toggles noclip free-fly (ignored if a book/search input has focus).
+      if (e.code === "KeyF" && !isInputLocked()) toggleFreeFly();
     };
     const up = (e: KeyboardEvent) => (keys[e.code] = false);
     window.addEventListener("keydown", down);
@@ -61,7 +65,8 @@ export function Player() {
   const { camera } = useThree();
   const reading = useOpenState() !== null;
   const flying = useFlying();
-  const locked = reading || flying; // freeze controls while reading or travelling
+  const freeFly = useFreeFly();
+  const locked = reading || flying; // freeze controls while reading or travelling (NOT free-fly)
   const arrival = useArrival();
   useKeyboard();
 
@@ -131,6 +136,33 @@ export function Player() {
 
     const v = rb.linvel();
     const p = rb.translation();
+
+    // --- noclip free-fly: detach gravity, move the body along the full camera direction.
+    // Collision is off (kinematicPosition body, see RigidBody below) so we phase through walls.
+    if (isFreeFly()) {
+      const fwd = new THREE.Vector3();
+      camera.getWorldDirection(fwd); // full 3D look direction (includes pitch)
+      const rightV = new THREE.Vector3().crossVectors(fwd, UP.current).normalize();
+      const move = new THREE.Vector3();
+      if (!frozen) {
+        if (keys["KeyW"]) move.add(fwd);
+        if (keys["KeyS"]) move.sub(fwd);
+        if (keys["KeyD"]) move.add(rightV);
+        if (keys["KeyA"]) move.sub(rightV);
+        if (keys["Space"]) move.y += 1; // rise
+        if (keys["ControlLeft"] || keys["KeyC"]) move.y -= 1; // descend
+      }
+      const flySpeed = keys["ShiftLeft"] || keys["ShiftRight"] ? FLY_SPRINT : FLY_SPEED;
+      if (move.lengthSq() > 0) move.normalize().multiplyScalar(flySpeed * dt);
+      const nx = p.x + move.x, ny = p.y + move.y, nz = p.z + move.z;
+      rb.setNextKinematicTranslation({ x: nx, y: ny, z: nz });
+      playerPos.x = nx;
+      playerPos.y = ny;
+      playerPos.z = nz;
+      // camera rides the body directly (no smoothing/bob in fly mode)
+      camera.position.set(nx, ny, nz);
+      return;
+    }
 
     // --- ground check: cast a short ray straight down from the capsule bottom -------------
     const origin = { x: p.x, y: p.y - (CAP_HALF + CAP_RADIUS) + 0.02, z: p.z };
@@ -243,16 +275,20 @@ export function Player() {
   return (
     <>
       <RigidBody
+        // Remount when toggling fly so the body type flips cleanly. Seed its position from the
+        // live player pos (not stale SPAWN) so we don't snap back on toggle.
+        key={freeFly ? "fly" : "walk"}
         ref={body}
         colliders={false}
+        type={freeFly ? "kinematicPosition" : "dynamic"}
         mass={1}
-        position={[SPAWN[0], 1.0, SPAWN[1]]}
+        position={[playerPos.x, playerPos.y || 1.0, playerPos.z]}
         enabledRotations={[false, false, false]}
         gravityScale={GRAVITY_SCALE}
         canSleep={false}
         ccd
       >
-        <CapsuleCollider args={[0.5, 0.35]} />
+        {!freeFly && <CapsuleCollider args={[0.5, 0.35]} />}
       </RigidBody>
       {!locked && <PointerLockControls ref={lockRef as never} />}
     </>

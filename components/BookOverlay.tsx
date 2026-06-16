@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useOpenState, useFlying, closeBook, turnPage, tutorialSeen } from "./bookStore";
+import { useOpenState, useFlying, useFreeFly, toggleFreeFly, closeBook, turnPage, tutorialSeen } from "./bookStore";
 import { addrToCoordString } from "@/lib/library";
 
 // Copy with a fallback for non-secure contexts (plain HTTP, e.g. a self-hosted deploy):
@@ -82,6 +82,27 @@ export function FlyingVeil() {
         TRAVELLING THE STACKS…
       </div>
     </div>
+  );
+}
+
+// Top-right toggle for noclip free-fly. Mirrors the F key. Hidden while a book is open so it
+// doesn't overlap the reading UI. pointer-events-auto so it's clickable through the overlay.
+export function FlyButton() {
+  const open = useOpenState();
+  const freeFly = useFreeFly();
+  if (open) return null;
+  return (
+    <button
+      onClick={() => toggleFreeFly()}
+      className={`pointer-events-auto absolute right-4 top-4 rounded px-3 py-1.5 text-xs tracking-wider backdrop-blur-sm transition-colors ${
+        freeFly
+          ? "bg-amber-300/90 text-black hover:bg-amber-200"
+          : "bg-white/10 text-white/80 hover:bg-white/20"
+      }`}
+      title="Toggle noclip free-fly (F). Space/Ctrl = up/down, Shift = boost."
+    >
+      {freeFly ? "✈ flying (F)" : "fly (F)"}
+    </button>
   );
 }
 

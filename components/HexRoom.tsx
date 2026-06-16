@@ -1,17 +1,93 @@
 "use client";
 
+import * as THREE from "three";
 import { RigidBody, CuboidCollider } from "@react-three/rapier";
 import { Edges } from "@react-three/drei";
-import { hexWalls, HEX_RADIUS, WALL_HEIGHT, WALL_THICKNESS, DOORWAY_WIDTH, DOORWAY_HEIGHT, isDoorBig } from "@/lib/babel";
+import { hexWalls, HEX_RADIUS, WALL_HEIGHT, WALL_THICKNESS, DOORWAY_WIDTH, DOORWAY_HEIGHT, isDoorBig, neighborOfBig } from "@/lib/babel";
+import { floorTex, wallTex, ceilingTex, doorTex } from "@/lib/textures";
 import { Bookshelf } from "./Bookshelf";
+
+// Shared, build-once materials. One instance per surface type, reused by every
+// hex in the grid — the textures behind them are singletons too, so the GPU
+// uploads each map a single time and per-hex cost is zero. Each material gets a
+// colour map + a matching normal map (relief from the painted grooves/bevels).
+let _wallMat: THREE.MeshStandardMaterial | null = null;
+let _floorMat: THREE.MeshStandardMaterial | null = null;
+let _ceilMat: THREE.MeshStandardMaterial | null = null;
+function wallMat() {
+  if (_wallMat) return _wallMat;
+  const t = wallTex();
+  return (_wallMat = new THREE.MeshStandardMaterial({
+    map: t.map,
+    normalMap: t.normalMap,
+    normalScale: new THREE.Vector2(1.4, 1.4), // deep panel grooves
+    roughness: 0.78, // satin walnut, not glossy orange
+    metalness: 0.02,
+  }));
+}
+function floorMat() {
+  if (_floorMat) return _floorMat;
+  const t = floorTex();
+  return (_floorMat = new THREE.MeshStandardMaterial({
+    map: t.map,
+    normalMap: t.normalMap,
+    normalScale: new THREE.Vector2(1.5, 1.5), // chunky flagstone joints
+    roughness: 0.85, // worn matte stone
+  }));
+}
+function ceilMat() {
+  if (_ceilMat) return _ceilMat;
+  const t = ceilingTex();
+  return (_ceilMat = new THREE.MeshStandardMaterial({
+    map: t.map,
+    normalMap: t.normalMap,
+    normalScale: new THREE.Vector2(1.0, 1.0),
+    roughness: 0.95,
+  }));
+}
+// Doorway jambs/lintel: carved stone portal, distinct from the wood walls.
+let _doorMat: THREE.MeshStandardMaterial | null = null;
+function doorMat() {
+  if (_doorMat) return _doorMat;
+  const t = doorTex();
+  return (_doorMat = new THREE.MeshStandardMaterial({
+    map: t.map,
+    normalMap: t.normalMap,
+    normalScale: new THREE.Vector2(0.4, 0.4),
+    roughness: 0.92,
+  }));
+}
+
+// A wall-panel box whose front/back face UVs are a SUB-RANGE of the full wall
+// texture: u in [u0,u1], v in [v0,v1]. Lets a narrow door pillar show the same
+// world-scale paneling as a full solid wall (it renders the matching slice of
+// the 3x3 panel layout instead of squeezing the whole panel set into itself).
+// Cached by rounded slice key.
+const _panelGeoCache = new Map<string, THREE.BoxGeometry>();
+function panelSliceGeo(w: number, h: number, d: number, u0: number, u1: number, v0: number, v1: number) {
+  const key = `${w.toFixed(3)},${h.toFixed(3)},${d.toFixed(3)},${u0.toFixed(3)},${u1.toFixed(3)},${v0.toFixed(3)},${v1.toFixed(3)}`;
+  const hit = _panelGeoCache.get(key);
+  if (hit) return hit;
+  const g = new THREE.BoxGeometry(w, h, d);
+  const uv = g.attributes.uv;
+  // BoxGeometry face order: +x,-x,+y,-y,+z,-z; 4 verts each (16..23 = +z, 20..23 = -z).
+  // Remap the front (+z, verts 16-19) and back (-z, verts 20-23) faces.
+  for (let i = 16; i < 24; i++) {
+    const ux = uv.getX(i); // 0..1 within the face
+    const uy = uv.getY(i);
+    uv.setXY(i, u0 + ux * (u1 - u0), v0 + uy * (v1 - v0));
+  }
+  uv.needsUpdate = true;
+  _panelGeoCache.set(key, g);
+  return g;
+}
 
 // A single solid wall segment (full height, no door).
 function SolidWall({ mid, length, rotY }: { mid: [number, number]; length: number; rotY: number }) {
   return (
     <RigidBody type="fixed" colliders="cuboid">
-      <mesh position={[mid[0], WALL_HEIGHT / 2, mid[1]]} rotation={[0, -rotY, 0]} castShadow receiveShadow>
+      <mesh position={[mid[0], WALL_HEIGHT / 2, mid[1]]} rotation={[0, -rotY, 0]} castShadow receiveShadow material={wallMat()}>
         <boxGeometry args={[length, WALL_HEIGHT, WALL_THICKNESS]} />
-        <meshStandardMaterial color="#6b5d4f" roughness={0.9} />
         <Edges threshold={15} color="#15100a" />
       </mesh>
     </RigidBody>
@@ -30,56 +106,153 @@ function DoorWall({ mid, length, rotY }: { mid: [number, number]; length: number
   const [lxA, lzA] = place(-sideOffset);
   const [lxB, lzB] = place(sideOffset);
 
+  // Stone reveal jambs lining the opening (the faces you see passing through):
+  // two vertical side jambs at the opening edges + a top jamb under the lintel.
+  // Thin slabs slightly proud of the wall thickness so only the reveal shows
+  // stone; the big wall faces stay wood.
+  const jambT = 0.035; // jamb slab thickness (the strip width along the wall) — slim
+  const jambD = WALL_THICKNESS - 0.04; // sit inside the reveal, not proud of the wall
+  const edgeX = DOORWAY_WIDTH / 2 - jambT / 2; // jamb hugs the opening edge (edge contact, no face overlap)
+  const [jxL, jzL] = place(-edgeX);
+  const [jxR, jzR] = place(edgeX);
+  const sideH = DOORWAY_HEIGHT - jambT; // meet the top jamb edge-to-edge
+  const lintelW = DOORWAY_WIDTH; // exactly fills the gap — edge contact with pillars, no coplanar overlap
+
   return (
     <RigidBody type="fixed" colliders="cuboid">
       <group>
-        <mesh position={[lxA, WALL_HEIGHT / 2, lzA]} rotation={[0, -rotY, 0]} castShadow receiveShadow>
-          <boxGeometry args={[sideW, WALL_HEIGHT, WALL_THICKNESS]} />
-          <meshStandardMaterial color="#6b5d4f" roughness={0.9} />
+        {/* wall faces stay wood paneling — UVs sliced so panels match the world
+            scale of a full SolidWall (same hex, same length). */}
+        <mesh
+          position={[lxA, WALL_HEIGHT / 2, lzA]}
+          rotation={[0, -rotY, 0]}
+          castShadow
+          receiveShadow
+          material={wallMat()}
+          geometry={panelSliceGeo(sideW, WALL_HEIGHT, WALL_THICKNESS, 0, sideW / length, 0, 1)}
+        />
+        <mesh
+          position={[lxB, WALL_HEIGHT / 2, lzB]}
+          rotation={[0, -rotY, 0]}
+          castShadow
+          receiveShadow
+          material={wallMat()}
+          geometry={panelSliceGeo(sideW, WALL_HEIGHT, WALL_THICKNESS, 1 - sideW / length, 1, 0, 1)}
+        />
+        <mesh
+          position={[mid[0], DOORWAY_HEIGHT + lintelH / 2, mid[1]]}
+          rotation={[0, -rotY, 0]}
+          castShadow
+          receiveShadow
+          material={wallMat()}
+          geometry={panelSliceGeo(
+            lintelW,
+            lintelH,
+            WALL_THICKNESS,
+            sideW / length,
+            1 - sideW / length,
+            DOORWAY_HEIGHT / WALL_HEIGHT,
+            1
+          )}
+        />
+
+        {/* stone reveals: only the inner faces of the opening */}
+        <mesh position={[jxL, sideH / 2, jzL]} rotation={[0, -rotY, 0]} castShadow receiveShadow material={doorMat()}>
+          <boxGeometry args={[jambT, sideH, jambD]} />
         </mesh>
-        <mesh position={[lxB, WALL_HEIGHT / 2, lzB]} rotation={[0, -rotY, 0]} castShadow receiveShadow>
-          <boxGeometry args={[sideW, WALL_HEIGHT, WALL_THICKNESS]} />
-          <meshStandardMaterial color="#6b5d4f" roughness={0.9} />
+        <mesh position={[jxR, sideH / 2, jzR]} rotation={[0, -rotY, 0]} castShadow receiveShadow material={doorMat()}>
+          <boxGeometry args={[jambT, sideH, jambD]} />
         </mesh>
-        <mesh position={[mid[0], DOORWAY_HEIGHT + lintelH / 2, mid[1]]} rotation={[0, -rotY, 0]} castShadow receiveShadow>
-          <boxGeometry args={[DOORWAY_WIDTH, lintelH, WALL_THICKNESS]} />
-          <meshStandardMaterial color="#6b5d4f" roughness={0.9} />
+        <mesh position={[mid[0], DOORWAY_HEIGHT - jambT / 2, mid[1]]} rotation={[0, -rotY, 0]} castShadow receiveShadow material={doorMat()}>
+          <boxGeometry args={[DOORWAY_WIDTH, jambT, jambD]} />
         </mesh>
       </group>
     </RigidBody>
   );
 }
 
-export function HexRoom({ tq, tr }: { tq: bigint; tr: bigint }) {
+// Ceiling slab with PLANAR (per-hex local) UVs — the coffer pattern repeats per
+// hex, so local UV is fine here. Built once, shared.
+let _ceilSlabGeo: THREE.CylinderGeometry | null = null;
+function ceilSlabGeo() {
+  if (_ceilSlabGeo) return _ceilSlabGeo;
+  const g = new THREE.CylinderGeometry(HEX_RADIUS, HEX_RADIUS, 0.1, 6, 1);
+  const pos = g.attributes.position;
+  const uv = g.attributes.uv;
+  const s = 1 / HEX_RADIUS;
+  for (let i = 0; i < pos.count; i++) {
+    uv.setXY(i, pos.getX(i) * s * 0.5 + 0.5, pos.getZ(i) * s * 0.5 + 0.5);
+  }
+  uv.needsUpdate = true;
+  _ceilSlabGeo = g;
+  return g;
+}
+
+// World meters spanned by one floor-texture tile. Flagstone UVs are derived
+// from WORLD x/z (vertex local + hex world offset) so the stone pattern is
+// continuous across hex boundaries — no seam at the doorways.
+const FLOOR_TILE = 6;
+
+// Floor slab whose cap UVs are biased by the hex's world offset (ox,oz), so the
+// tiled flagstone texture lines up seamlessly between neighbouring hexes. Geo is
+// tiny (a 6-gon cap); cached per rounded world position so panning the grid
+// reuses geometry instead of reallocating every hex every frame.
+const _floorGeoCache = new Map<string, THREE.CylinderGeometry>();
+function floorSlabGeo(ox: number, oz: number) {
+  const key = `${Math.round(ox * 100)},${Math.round(oz * 100)}`;
+  const hit = _floorGeoCache.get(key);
+  if (hit) return hit;
+  const g = new THREE.CylinderGeometry(HEX_RADIUS, HEX_RADIUS, 0.1, 6, 1);
+  const pos = g.attributes.position;
+  const uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const wx = pos.getX(i) + ox; // world x of this vertex
+    const wz = pos.getZ(i) + oz; // world z
+    uv.setXY(i, wx / FLOOR_TILE, wz / FLOOR_TILE);
+  }
+  uv.needsUpdate = true;
+  _floorGeoCache.set(key, g);
+  return g;
+}
+
+export function HexRoom({ tq, tr, ox = 0, oz = 0 }: { tq: bigint; tr: bigint; ox?: number; oz?: number }) {
   const walls = hexWalls();
   // Per-wall door state from the flower tiling (both neighbours agree). True BigInt coord.
   const doors = walls.map((w) => isDoorBig(tq, tr, w.index));
+  // A door edge is shared by two ring hexes that BOTH draw it -> the two coplanar
+  // DoorWalls z-fight (ghosting at grazing angles). Dedupe: only the "owner" hex
+  // of the shared edge renders it. Owner = lower (q, then r). The non-owner skips
+  // it (the passage is open anyway). Solid walls face a sealed centre that draws
+  // nothing, so they're never double-drawn and need no dedupe.
+  const ownsDoor = walls.map((w) => {
+    if (!doors[w.index]) return false;
+    const [nq, nr] = neighborOfBig(tq, tr, w.index);
+    return tq < nq || (tq === nq && tr < nr);
+  });
   // Stable seed for this hex's shelf look, from the low bits of the true coord.
   const seed = Number(((tq * 999n + tr * 17n) % 1000003n + 1000003n) % 1000003n) + 1;
 
   return (
     <group>
       {/* Floor: visible hex mesh + an explicit flat collider slab whose top sits at y=0. */}
-      <mesh position={[0, -0.05, 0]} receiveShadow>
-        <cylinderGeometry args={[HEX_RADIUS, HEX_RADIUS, 0.1, 6, 1]} />
-        <meshStandardMaterial color="#8a7a5c" roughness={0.85} />
-        <Edges threshold={15} color="#15100a" />
-      </mesh>
+      {/* No <Edges> here: the dark hex outline was the faint seam between floors.
+          The continuous flagstone UVs already hide the boundary. */}
+      <mesh position={[0, -0.05, 0]} receiveShadow material={floorMat()} geometry={floorSlabGeo(ox, oz)} />
       <RigidBody type="fixed" colliders={false}>
         <CuboidCollider args={[HEX_RADIUS, 0.5, HEX_RADIUS]} position={[0, -0.5, 0]} />
       </RigidBody>
 
       {/* Ceiling */}
-      <mesh position={[0, WALL_HEIGHT, 0]}>
-        <cylinderGeometry args={[HEX_RADIUS, HEX_RADIUS, 0.1, 6, 1]} />
-        <meshStandardMaterial color="#4a4036" roughness={1} />
+      <mesh position={[0, WALL_HEIGHT, 0]} material={ceilMat()} geometry={ceilSlabGeo()}>
         <Edges threshold={15} color="#15100a" />
       </mesh>
 
-      {/* Walls: doorway or solid per the shared-edge hash */}
+      {/* Walls: solid (always drawn) or doorway (drawn once, by the owner hex) */}
       {walls.map((w) =>
         doors[w.index] ? (
-          <DoorWall key={w.index} mid={w.mid} length={w.length} rotY={w.rotY} />
+          ownsDoor[w.index] ? (
+            <DoorWall key={w.index} mid={w.mid} length={w.length} rotY={w.rotY} />
+          ) : null
         ) : (
           <SolidWall key={w.index} mid={w.mid} length={w.length} rotY={w.rotY} />
         )

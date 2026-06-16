@@ -18,6 +18,9 @@ const FlyingVeil = dynamic(() => import("@/components/BookOverlay").then((m) => 
 const SearchBar = dynamic(() => import("@/components/SearchBar").then((m) => m.SearchBar), {
   ssr: false,
 });
+const FlyButton = dynamic(() => import("@/components/BookOverlay").then((m) => m.FlyButton), {
+  ssr: false,
+});
 
 export default function Home() {
   return (
@@ -29,12 +32,13 @@ export default function Home() {
 
       {/* controls hint */}
       <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 text-center text-xs tracking-widest text-white/40">
-        CLICK TO ENTER · WASD MOVE · MOUSE LOOK · CLICK A BOOK TO READ · ESC RELEASE
+        CLICK TO ENTER · WASD MOVE · MOUSE LOOK · F FLY · CLICK A BOOK TO READ · ESC RELEASE
       </div>
 
       <StartHint />
       <FlyingVeil />
       <SearchBar />
+      <FlyButton />
       <BookOverlay />
     </main>
   );

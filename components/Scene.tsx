@@ -32,7 +32,7 @@ export function Scene() {
       gl={{ antialias: true, powerPreference: "high-performance" }}
     >
       <color attach="background" args={["#0a0807"]} />
-      {!DEBUG && <fog attach="fog" args={["#0a0807", 6, 20]} />}
+      {!DEBUG && <fog attach="fog" args={["#0a0807", 5, 15]} />}
 
       <ambientLight intensity={0.55} />
       {!DEBUG && <FollowLamp />}

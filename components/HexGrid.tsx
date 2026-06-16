@@ -79,7 +79,8 @@ export function HexGrid() {
         const [x, z] = hexToWorld(lq, lr);
         return (
           <group key={`${origin.q},${origin.r}:${keyOf(lq, lr)}`} position={[x, 0, z]}>
-            <HexRoom tq={t.q} tr={t.r} />
+            {/* pass world offset so the floor's flagstone UVs are continuous across hexes */}
+            <HexRoom tq={t.q} tr={t.r} ox={x} oz={z} />
           </group>
         );
       })}
