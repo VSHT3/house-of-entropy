@@ -8,9 +8,9 @@ export const CHARS_PER_LINE = 80;
 export const LINES_PER_PAGE = 40;
 export const PAGES_PER_BOOK = 410;
 export const BOOKS_PER_SHELF = 32;
-export const SHELVES_PER_WALL = 5;
+export const SHELVES_PER_WALL = 7;
 export const WALLS_PER_HEX = 4; // 6 walls total; 2 are doorways, 4 hold shelves
-export const BOOKS_PER_HEX = BOOKS_PER_SHELF * SHELVES_PER_WALL * WALLS_PER_HEX; // 640
+export const BOOKS_PER_HEX = BOOKS_PER_SHELF * SHELVES_PER_WALL * WALLS_PER_HEX;
 
 export const CHARS_PER_BOOK = CHARS_PER_LINE * LINES_PER_PAGE * PAGES_PER_BOOK; // 1,312,000
 

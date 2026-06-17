@@ -139,210 +139,6 @@ function normalFromCanvas(cv: HTMLCanvasElement, strength: number): THREE.Canvas
   return tex;
 }
 
-// ===========================================================================
-// FLOOR — old castle flagstones: large IRREGULAR stones of varied size with
-// organic wobbly mortar joints, heavy mottling, worn highlights. Avoids the
-// "clean tile grid" look by random-merging cells and jittering every edge.
-// ===========================================================================
-function buildFloor(size = 1024): HTMLCanvasElement {
-  const { cv, ctx } = ctxOf(size);
-  ctx.fillStyle = "#171310"; // deep mortar fills the gaps
-  ctx.fillRect(0, 0, size, size);
-
-  const cells = 5; // coarse base grid; some cells merge into bigger slabs
-  const cw = size / cells;
-  const occupied: boolean[] = new Array(cells * cells).fill(false);
-  const stoneBase = [0x92, 0x88, 0x76]; // warm grey limestone
-
-  // a wobbly-edged rounded rect path (organic, hand-cut stone)
-  const wobbleStone = (gx: number, gy: number, gw: number, gh: number, seed: number) => {
-    const r = rng(seed);
-    const inset = size * 0.02;
-    const x0 = gx + inset, y0 = gy + inset;
-    const x1 = gx + gw - inset, y1 = gy + gh - inset;
-    // edge jitter kept < inset so a stone never breaches its cell border —
-    // this is what keeps the whole texture seamlessly tileable.
-    const wob = () => (r() - 0.5) * size * 0.014;
-    ctx.beginPath();
-    const steps = 6;
-    // top edge
-    for (let i = 0; i <= steps; i++) {
-      const px = x0 + ((x1 - x0) * i) / steps;
-      i === 0 ? ctx.moveTo(px, y0 + wob()) : ctx.lineTo(px, y0 + wob());
-    }
-    for (let i = 1; i <= steps; i++) ctx.lineTo(x1 + wob(), y0 + ((y1 - y0) * i) / steps);
-    for (let i = 1; i <= steps; i++) ctx.lineTo(x1 - ((x1 - x0) * i) / steps, y1 + wob());
-    for (let i = 1; i <= steps; i++) ctx.lineTo(x0 + wob(), y1 - ((y1 - y0) * i) / steps);
-    ctx.closePath();
-
-    const tone = (r() - 0.5) * 30;
-    ctx.fillStyle = `rgb(${stoneBase[0] + tone},${stoneBase[1] + tone},${stoneBase[2] + tone})`;
-    ctx.fill();
-    // worn highlight rim (top/left) + recessed shadow (bottom/right)
-    ctx.save();
-    ctx.clip();
-    const hl = ctx.createLinearGradient(gx, gy, gx + gw, gy + gh);
-    hl.addColorStop(0, "rgba(255,248,230,0.16)");
-    hl.addColorStop(0.5, "rgba(0,0,0,0)");
-    hl.addColorStop(1, "rgba(0,0,0,0.22)");
-    ctx.fillStyle = hl;
-    ctx.fillRect(gx, gy, gw, gh);
-    // per-stone blotches for veined limestone
-    for (let s = 0; s < 5; s++) {
-      ctx.fillStyle = `rgba(${40 + r() * 60},${36 + r() * 55},${28 + r() * 45},0.10)`;
-      ctx.beginPath();
-      ctx.ellipse(gx + r() * gw, gy + r() * gh, gw * (0.1 + r() * 0.2), gh * (0.08 + r() * 0.15), r() * 6, 0, 7);
-      ctx.fill();
-    }
-    ctx.restore();
-  };
-
-  let seed = 100;
-  for (let ry = 0; ry < cells; ry++) {
-    for (let cx = 0; cx < cells; cx++) {
-      if (occupied[ry * cells + cx]) continue;
-      const r = rng(seed++);
-      // sometimes make a 2-wide or 2-tall slab if room (varied stone sizes).
-      // Never merge across the right/bottom wrap edge — keeps the tile seamless.
-      let gw = 1, gh = 1;
-      if (cx + 1 < cells && !occupied[ry * cells + cx + 1] && r() < 0.3) gw = 2;
-      else if (ry + 1 < cells && !occupied[(ry + 1) * cells + cx] && r() < 0.3) gh = 2;
-      for (let yy = 0; yy < gh; yy++)
-        for (let xx = 0; xx < gw; xx++) occupied[(ry + yy) * cells + cx + xx] = true;
-      wobbleStone(cx * cw, ry * cw, gw * cw, gh * cw, seed);
-    }
-  }
-  // Seamless noise overlay (fbm is already tileable) so the grit also wraps.
-  overlayNoise(ctx, size, 13, 0.3);
-  return cv;
-}
-
-// ===========================================================================
-// WALLS — dark walnut wainscot paneling: a tight grid of recessed framed
-// panels with deep grooves, an inner moulding line, and rich vertical grain.
-// Dark + saturated (not the flat orange) so it reads as old library joinery.
-// ===========================================================================
-function buildWall(size = 1024): HTMLCanvasElement {
-  const { cv, ctx } = ctxOf(size);
-  // deep walnut grain backdrop
-  const grain = fbm(size, 41, 5);
-  const img = ctx.createImageData(size, size);
-  const wood = [0x4a, 0x2f, 0x1c]; // dark walnut (was too light/orange before)
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = y * size + x;
-      // tight vertical grain: fine fbm modulated by a higher-freq vertical streak
-      const streak = Math.sin((grain[i] * 7 + (x / size) * 9) * Math.PI) * 0.5 + 0.5;
-      const g = 0.66 + grain[i] * 0.32 + streak * 0.12;
-      const p = i * 4;
-      img.data[p] = Math.min(255, wood[0] * g);
-      img.data[p + 1] = Math.min(255, wood[1] * g);
-      img.data[p + 2] = Math.min(255, wood[2] * g);
-      img.data[p + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-
-  // Tight 3x3 grid of recessed framed panels (wainscot). Smaller panels read
-  // far richer than a couple of big flat fields.
-  const cols = 3;
-  const rows = 3;
-  const pw = size / cols;
-  const ph = size / rows;
-  const stile = Math.min(pw, ph) * 0.16; // frame rail/stile width
-
-  for (let ry = 0; ry < rows; ry++) {
-    for (let cx = 0; cx < cols; cx++) {
-      const x = cx * pw + stile;
-      const y = ry * ph + stile;
-      const w = pw - stile * 2;
-      const h = ph - stile * 2;
-      const groove = stile * 0.45;
-
-      // 1) deep recess groove around the panel (dark) — frame sits proud
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillRect(x - groove, y - groove, w + groove * 2, groove);
-      ctx.fillRect(x - groove, y + h, w + groove * 2, groove);
-      ctx.fillRect(x - groove, y - groove, groove, h + groove * 2);
-      ctx.fillRect(x + w, y - groove, groove, h + groove * 2);
-
-      // 2) the recessed field is slightly darker than the frame
-      ctx.fillStyle = "rgba(0,0,0,0.18)";
-      ctx.fillRect(x, y, w, h);
-
-      // 3) chamfer bevels INTO the recess: shadow on top/left, light bottom/right
-      const bv = groove * 0.9;
-      ctx.fillStyle = "rgba(0,0,0,0.4)";
-      ctx.fillRect(x, y, w, bv);
-      ctx.fillRect(x, y, bv, h);
-      ctx.fillStyle = "rgba(255,210,160,0.14)";
-      ctx.fillRect(x, y + h - bv, w, bv);
-      ctx.fillRect(x + w - bv, y, bv, h);
-
-      // 4) inner gilt moulding line — the "fancy" detail
-      ctx.strokeStyle = "rgba(150,120,60,0.5)";
-      ctx.lineWidth = size * 0.004;
-      const m = w * 0.14;
-      ctx.strokeRect(x + m, y + m, w - m * 2, h - m * 2);
-
-      // 5) frame highlight where the proud rail catches light (top/left)
-      ctx.fillStyle = "rgba(255,220,170,0.1)";
-      ctx.fillRect(x - groove, y - groove, w + groove * 2, groove * 0.4);
-      ctx.fillRect(x - groove, y - groove, groove * 0.4, h + groove * 2);
-    }
-  }
-  return cv;
-}
-
-// ===========================================================================
-// DOORWAY REVEAL — plain grey stone with only faint mottle. Lines the door
-// opening so the passage reads as a simple cut stone reveal, not busy ashlar.
-// ===========================================================================
-function buildDoorStone(size = 256): HTMLCanvasElement {
-  const { cv, ctx } = ctxOf(size);
-  ctx.fillStyle = "#4d4c4a"; // dark grey stone
-  ctx.fillRect(0, 0, size, size);
-  overlayNoise(ctx, size, 17, 0.14); // just a little tonal variation
-  return cv;
-}
-
-// ===========================================================================
-// CEILING — coffered panels: recessed square caissons with raised frames.
-// ===========================================================================
-function buildCeiling(size = 1024): HTMLCanvasElement {
-  const { cv, ctx } = ctxOf(size);
-  const panels = 3;
-  const t = size / panels;
-  ctx.fillStyle = "#3a3228"; // raised frame / beams
-  ctx.fillRect(0, 0, size, size);
-  const frame = t * 0.16;
-  for (let py = 0; py < panels; py++) {
-    for (let px = 0; px < panels; px++) {
-      const x = px * t + frame;
-      const y = py * t + frame;
-      const w = t - frame * 2;
-      const h = t - frame * 2;
-      // recessed sunken panel (darker), with inner bevel shading
-      ctx.fillStyle = "#26201a";
-      ctx.fillRect(x, y, w, h);
-      // bevel: dark on top/left (in shadow because recessed), light bottom/right
-      const bv = frame * 0.5;
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.fillRect(x, y, w, bv);
-      ctx.fillRect(x, y, bv, h);
-      ctx.fillStyle = "rgba(255,230,190,0.10)";
-      ctx.fillRect(x, y + h - bv, w, bv);
-      ctx.fillRect(x + w - bv, y, bv, h);
-      // central rosette dot
-      ctx.fillStyle = "rgba(120,100,70,0.5)";
-      ctx.beginPath();
-      ctx.arc(x + w / 2, y + h / 2, w * 0.06, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  overlayNoise(ctx, size, 31, 0.14);
-  return cv;
-}
 
 // ===========================================================================
 // WOOD — directional grain + ring streaks (shelf boards).
@@ -376,89 +172,138 @@ function buildWood(size = 256, seed = 21): HTMLCanvasElement {
 // while keeping the gilt/ink detail. Cells leave a thin dark gutter = the gap
 // between books. One shared texture; per-book variety comes from UV + colour.
 // ===========================================================================
-export const SPINE_ATLAS_COLS = 4;
-export const SPINE_ATLAS_ROWS = 4;
+export const SPINE_ATLAS_COLS = 6;
+export const SPINE_ATLAS_ROWS = 6;
 
-// Draw ONE antique book spine into rect [x,y,w,h]. style 0..15 varies the look.
-// Design goal: a tall PLAIN leather spine dominated by empty leather, with a
-// single bold gilt title label and at most one pair of raised bands framing it.
-// Too many horizontal lines read as "many tiny books stacked" — so keep it sparse.
-function drawSpine(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, style: number) {
+// Draw ONE antique book spine into rect [x,y,w,h]. style varies the look.
+// Photoreal goal: tooled leather with fine grain mottle, raised hubs (sewn-cord
+// bands) with proper highlight/shadow, an inset morocco title label with faux
+// gilt lettering, a foot tooling block, gilt head/foot rules, and scuffed worn
+// edges. Drawn near-white so the per-book instanceColor tints each volume.
+function drawSpine(ctx: CanvasRenderingContext2D, gx: number, gy: number, gw: number, gh: number, style: number) {
   const r = rng(style * 977 + 13);
   ctx.save();
   ctx.beginPath();
-  ctx.rect(x, y, w, h);
+  ctx.rect(gx, gy, gw, gh);
   ctx.clip();
-
-  // leather base (near-white so per-book instanceColor tints it)
-  ctx.fillStyle = "#d6d2c8";
-  ctx.fillRect(x, y, w, h);
-
-  // curved-leather shading: dark at both edges, soft sheen down the centre
-  const g = ctx.createLinearGradient(x, 0, x + w, 0);
-  g.addColorStop(0, "rgba(0,0,0,0.55)");
-  g.addColorStop(0.16, "rgba(0,0,0,0.06)");
-  g.addColorStop(0.5, "rgba(255,255,255,0.12)");
-  g.addColorStop(0.84, "rgba(0,0,0,0.06)");
-  g.addColorStop(1, "rgba(0,0,0,0.55)");
-  ctx.fillStyle = g;
-  ctx.fillRect(x, y, w, h);
-
-  const gilt = style % 6 === 0 ? "rgba(70,52,22,0.9)" : "rgba(176,138,58,0.95)"; // mostly gilt, some blind
+  const x = gx, y = gy, w = gw, h = gh;
   const cx = x + w / 2;
 
-  // helper: a raised band (thin highlight crest with shadow above/below)
-  const band = (by: number) => {
-    const hh = h * 0.012;
-    ctx.fillStyle = "rgba(0,0,0,0.4)";
-    ctx.fillRect(x, by - hh * 1.8, w, hh);
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.fillRect(x, by - hh * 0.4, w, hh * 1.3);
-    ctx.fillStyle = "rgba(0,0,0,0.38)";
-    ctx.fillRect(x, by + hh, w, hh);
-  };
-
-  // ONE title label, set in the upper third, framed by a pair of bands.
-  const labelMid = y + h * (0.26 + (style % 3) * 0.04);
-  const labelH = h * 0.16;
-  const bandTop = labelMid - labelH * 0.85;
-  const bandBot = labelMid + labelH * 0.85;
-  if (style % 4 !== 3) {
-    band(bandTop);
-    band(bandBot);
-  }
-  // inset leather title panel (dark maroon / navy / black morocco)
-  const labelTones = ["rgba(74,22,18,0.62)", "rgba(22,30,58,0.6)", "rgba(20,18,16,0.6)"];
-  ctx.fillStyle = labelTones[style % labelTones.length];
-  ctx.fillRect(x + w * 0.12, labelMid - labelH / 2, w * 0.76, labelH);
-  ctx.strokeStyle = gilt;
-  ctx.lineWidth = w * 0.035;
-  ctx.strokeRect(x + w * 0.12, labelMid - labelH / 2, w * 0.76, labelH);
-  // a couple of embossed title bars
-  ctx.fillStyle = gilt;
-  for (let l = 0; l < 2; l++) {
-    const tw = w * (0.46 + r() * 0.14);
-    ctx.fillRect(cx - tw / 2, labelMid - labelH * 0.18 + l * labelH * 0.36, tw, h * 0.014);
-  }
-
-  // a single small gilt ornament low on the spine (crest / star), most books
-  if (style % 3 !== 2) {
-    const oy = y + h * 0.7;
-    const s = w * 0.16;
-    ctx.fillStyle = gilt;
+  // 1) leather base (near-white so instanceColor tints it) + fine grain mottle.
+  ctx.fillStyle = "#d8d4ca";
+  ctx.fillRect(x, y, w, h);
+  // pebbled leather grain: many tiny tonal blotches
+  for (let i = 0; i < 90; i++) {
+    const t = (r() - 0.5) * 46;
+    const a = 0.04 + r() * 0.07;
+    ctx.fillStyle = t < 0 ? `rgba(0,0,0,${a})` : `rgba(255,250,238,${a})`;
     ctx.beginPath();
-    ctx.moveTo(cx, oy - s);
-    ctx.lineTo(cx + s * 0.7, oy);
-    ctx.lineTo(cx, oy + s);
-    ctx.lineTo(cx - s * 0.7, oy);
-    ctx.closePath();
+    ctx.ellipse(x + r() * w, y + r() * h, w * (0.02 + r() * 0.05), w * (0.02 + r() * 0.05), 0, 0, 7);
     ctx.fill();
   }
 
-  // gilt rule near head and foot only (frames the whole spine)
+  // 2) curved-leather shading: dark at both edges, soft sheen down the centre.
+  const g = ctx.createLinearGradient(x, 0, x + w, 0);
+  g.addColorStop(0, "rgba(0,0,0,0.6)");
+  g.addColorStop(0.14, "rgba(0,0,0,0.05)");
+  g.addColorStop(0.5, "rgba(255,255,255,0.14)");
+  g.addColorStop(0.86, "rgba(0,0,0,0.05)");
+  g.addColorStop(1, "rgba(0,0,0,0.6)");
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w, h);
+
+  const blind = style % 7 === 0; // a few books have blind (un-gilt) tooling
+  const gilt = blind ? "rgba(60,44,20,0.85)" : "rgba(198,158,74,0.96)";
+  const giltHi = blind ? "rgba(90,68,32,0.7)" : "rgba(236,206,128,0.95)";
+
+  // 3) raised hubs (sewn-cord bands across the spine). 4–5 evenly spaced bands
+  // divide the spine into panels — the classic antique look.
+  const nBands = 4 + (style % 2);
+  const top = y + h * 0.06;
+  const bot = y + h * 0.94;
+  const bandYs: number[] = [];
+  for (let i = 0; i < nBands; i++) bandYs.push(top + ((bot - top) * (i + 1)) / (nBands + 1));
+  const hub = (by: number) => {
+    const hh = h * 0.018;
+    // shadow under, body, highlight crest on top — reads as a rounded ridge
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(x, by + hh * 0.4, w, hh * 1.4);
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fillRect(x, by - hh * 1.4, w, hh * 2.6);
+    ctx.fillStyle = "rgba(255,250,235,0.5)";
+    ctx.fillRect(x, by - hh * 0.7, w, hh * 0.8);
+    // thin gilt rule riding the band
+    ctx.fillStyle = gilt;
+    ctx.fillRect(x + w * 0.08, by - hh * 0.1, w * 0.84, h * 0.004);
+  };
+  for (const by of bandYs) hub(by);
+
+  // 4) title label in the 2nd panel from top: inset morocco leather + gilt frame.
+  const pTop = bandYs[0];
+  const pBot = bandYs[1];
+  const labelMid = (pTop + pBot) / 2;
+  const labelH = (pBot - pTop) * 0.66;
+  const labelTones = ["#4a1612", "#161e3a", "#14120e", "#13301f", "#3a1430"]; // maroon/navy/black/forest/aubergine morocco
+  ctx.fillStyle = labelTones[style % labelTones.length];
+  const lx = x + w * 0.1, lw = w * 0.8;
+  ctx.fillRect(lx, labelMid - labelH / 2, lw, labelH);
+  // double gilt frame
+  ctx.strokeStyle = gilt;
+  ctx.lineWidth = w * 0.03;
+  ctx.strokeRect(lx, labelMid - labelH / 2, lw, labelH);
+  ctx.strokeStyle = giltHi;
+  ctx.lineWidth = w * 0.012;
+  ctx.strokeRect(lx + w * 0.05, labelMid - labelH / 2 + w * 0.05, lw - w * 0.1, labelH - w * 0.1);
+  // faux gilt title lettering: 2–3 rows of short glyph ticks
   ctx.fillStyle = gilt;
-  ctx.fillRect(x + w * 0.12, y + h * 0.04, w * 0.76, h * 0.007);
-  ctx.fillRect(x + w * 0.12, y + h * 0.95, w * 0.76, h * 0.007);
+  const rows = 2 + (style % 2);
+  for (let rr = 0; rr < rows; rr++) {
+    const ly = labelMid - labelH * 0.28 + (rr * labelH * 0.56) / Math.max(1, rows - 1);
+    let gxk = lx + w * 0.18;
+    const end = lx + lw - w * 0.18;
+    while (gxk < end) {
+      const gwk = w * (0.04 + r() * 0.07); // glyph width
+      ctx.fillRect(gxk, ly - h * 0.009, gwk, h * 0.018);
+      gxk += gwk + w * 0.03; // letter spacing
+    }
+  }
+
+  // 5) foot panel ornament: a small gilt tooling motif (lozenge + corner dots).
+  const fTop = bandYs[nBands - 1];
+  const fy = (fTop + bot) / 2;
+  ctx.fillStyle = gilt;
+  ctx.beginPath();
+  const s = w * 0.13;
+  ctx.moveTo(cx, fy - s);
+  ctx.lineTo(cx + s * 0.66, fy);
+  ctx.lineTo(cx, fy + s);
+  ctx.lineTo(cx - s * 0.66, fy);
+  ctx.closePath();
+  ctx.fill();
+  for (const dx of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(cx + dx * w * 0.26, fy, w * 0.025, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 6) gilt rules at head and foot framing the whole spine.
+  ctx.fillStyle = gilt;
+  ctx.fillRect(x + w * 0.1, y + h * 0.035, w * 0.8, h * 0.006);
+  ctx.fillRect(x + w * 0.1, y + h * 0.96, w * 0.8, h * 0.006);
+
+  // 7) worn/scuffed edges: lighten the very edges where leather rubs off, and a
+  // few random scuffs, so no two spines read as factory-clean.
+  const wear = ctx.createLinearGradient(x, 0, x + w * 0.1, 0);
+  wear.addColorStop(0, "rgba(210,196,170,0.5)");
+  wear.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = wear;
+  ctx.fillRect(x, y, w * 0.1, h);
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = `rgba(${200 + r() * 40},${188 + r() * 40},${160 + r() * 40},${0.1 + r() * 0.12})`;
+    ctx.beginPath();
+    ctx.ellipse(x + r() * w, y + r() * h, w * 0.04, h * 0.012, r() * 6, 0, 7);
+    ctx.fill();
+  }
 
   ctx.restore();
 }
@@ -495,30 +340,42 @@ function pair(cv: HTMLCanvasElement, strength: number, rx = 1, ry = 1): Pair {
   return { map, normalMap };
 }
 
-let _floor: Pair | null = null;
-let _wall: Pair | null = null;
-let _ceil: Pair | null = null;
+// Real photographed PBR sets (Poly Haven, CC0): 1k jpg maps under
+// public/textures/<dir>/ (diff/nor/rough). Unlike the canvas textures these
+// load image files; one shared loader, one set of GPU uploads, reused by every
+// hex. Floor: "marble_tiles". Walls: "wood_plank_wall". World-space UV in
+// HexRoom tiles them continuously, so the textures stay at repeat=1.
+type PhotoSet = {
+  map: THREE.Texture;
+  normalMap: THREE.Texture;
+  roughnessMap: THREE.Texture;
+};
+const _photoCache = new Map<string, PhotoSet>();
+export function photoTex(dir: string): PhotoSet {
+  const hit = _photoCache.get(dir);
+  if (hit) return hit;
+  const loader = new THREE.TextureLoader();
+  const load = (file: string, srgb: boolean) => {
+    const t = loader.load(`/textures/${dir}/${file}`);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    t.anisotropy = 8;
+    return t;
+  };
+  const set: PhotoSet = {
+    map: load("diff.jpg", true),
+    normalMap: load("nor.jpg", false),
+    roughnessMap: load("rough.jpg", false),
+  };
+  _photoCache.set(dir, set);
+  return set;
+}
+
 let _wood: Pair | null = null;
 let _spine: Pair | null = null;
-let _door: Pair | null = null;
 
-export function floorTex() {
-  // repeat handled by world-space UV in HexRoom (FLOOR_TILE) so flagstones run
-  // continuously across hex boundaries — keep the texture itself at 1x.
-  return (_floor ??= pair(buildFloor(), 5, 1, 1));
-}
-export function wallTex() {
-  // one raised-and-fielded paneling unit per wall face
-  return (_wall ??= pair(buildWall(), 5, 1, 1));
-}
-export function ceilingTex() {
-  return (_ceil ??= pair(buildCeiling(), 7, 1, 1));
-}
 export function woodTex() {
   return (_wood ??= pair(buildWood(), 2));
-}
-export function doorTex() {
-  return (_door ??= pair(buildDoorStone(), 1.5, 1, 1));
 }
 export function spineTex() {
   // Whole atlas, no repeat — per-book cell chosen via per-instance UV offset in

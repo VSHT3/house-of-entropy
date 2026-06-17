@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useLayoutEffect } from "react";
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { ThreeEvent } from "@react-three/fiber";
 import {
   BOOKS_PER_SHELF,
@@ -12,7 +13,7 @@ import {
 } from "@/lib/babel";
 import { openBook } from "./bookStore";
 import { isTutorialBook } from "@/lib/library";
-import { woodTex, spineTex } from "@/lib/textures";
+import { woodTex, spineTex, SPINE_ATLAS_COLS } from "@/lib/textures";
 
 // Shared shelf-board material, built once and reused by every shelf in every hex.
 let _boardMat: THREE.MeshStandardMaterial | null = null;
@@ -33,7 +34,7 @@ function boardMat() {
 // one shared material renders many different-looking bound books. Per-book hue
 // still comes from instanceColor (multiplied in). toneMapped=false keeps the
 // hover-brighten punchy. Built once, reused by every shelf.
-const ATLAS = 4; // SPINE_ATLAS_COLS === SPINE_ATLAS_ROWS
+const ATLAS = SPINE_ATLAS_COLS; // square atlas (COLS === ROWS)
 let _spineMat: THREE.MeshStandardMaterial | null = null;
 function spineMat() {
   if (_spineMat) return _spineMat;
@@ -74,12 +75,157 @@ function spineMat() {
   return (_spineMat = mat);
 }
 
+// instanceColor (the per-book hue) is applied by three to EVERY material on the
+// mesh. We only want it to tint the leather (spine + cover), never the cream
+// pages. This snippet strips the instanceColor multiply from a material so its
+// own map shows through untinted.
+function stripInstanceColor(mat: THREE.Material) {
+  mat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <color_fragment>",
+      "" // drop vColor / instanceColor multiply
+    );
+  };
+  mat.customProgramCacheKey = () => "no-instance-color";
+}
+
+// Cream page block (the text block): a faint stack-of-leaves striping along the
+// page axis so the visible head/tail/fore-edge read as paper, not a slab. NOT
+// tinted by the per-book hue.
+let _pagesMat: THREE.MeshStandardMaterial | null = null;
+function pagesMat() {
+  if (_pagesMat) return _pagesMat;
+  const c = document.createElement("canvas");
+  c.width = c.height = 256;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#e2d8bd"; // aged cream
+  ctx.fillRect(0, 0, 256, 256);
+  // fine leaf lines (paper stack). Strong enough to catch the lamp via normalScale.
+  for (let x = 0; x < 256; x += 1) {
+    const v = (x % 3 === 0) ? "rgba(120,104,72,0.28)" : "rgba(255,252,240,0.12)";
+    ctx.fillStyle = v;
+    ctx.fillRect(x, 0, 1, 256);
+  }
+  // a little uneven yellowing
+  for (let i = 0; i < 40; i++) {
+    ctx.fillStyle = `rgba(150,128,84,${0.04 + Math.random() * 0.06})`;
+    ctx.fillRect(Math.random() * 256, Math.random() * 256, 40, 6);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85 });
+  stripInstanceColor(mat);
+  return (_pagesMat = mat);
+}
+
+// Tooled-leather cover boards (front board edge, back, head/tail caps). Tinted
+// by the per-book hue like the spine so a book is one consistent colour.
+let _coverMat: THREE.MeshStandardMaterial | null = null;
+function coverMat() {
+  if (_coverMat) return _coverMat;
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#c9c3b6"; // near-white leather (instanceColor tints it)
+  ctx.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 60; i++) {
+    const t = (Math.random() - 0.5) * 50;
+    ctx.fillStyle = t < 0 ? `rgba(0,0,0,${0.05 + Math.random() * 0.06})` : `rgba(255,250,238,${0.05 + Math.random() * 0.05})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * 128, Math.random() * 128, 2 + Math.random() * 5, 0, 7);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return (_coverMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 }));
+}
+
+// ---------------------------------------------------------------------------
+// One detailed BOOK geometry, instanced for every book on every shelf (so the
+// whole shelf is still ~1 draw call). Unit cube space, scaled per instance by
+// (bookW, bookH, BOOK_DEPTH). Local axes: +z = spine (faces the room), -z =
+// fore-edge (into the wall); x = width, y = height. Built from boxes merged into
+// ONE geometry with three material groups: 0 = spine atlas face, 1 = cream page
+// block, 2 = leather cover. The cover is a slab at the spine; the page block is
+// inset (narrower w/h) and extends from just behind the spine to the fore-edge,
+// so the cream pages sit proud-inset behind the leather spine — a real book.
+// ---------------------------------------------------------------------------
+const MAT_SPINE = 0;
+const MAT_PAGES = 1;
+const MAT_COVER = 2;
+
+// A solid axis-aligned box spanning [x0,x1]×[y0,y1]×[z0,z1] (non-indexed, 36
+// verts, all 6 faces — so it renders from every angle, no 1px backface issue).
+function boxBetween(x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0).toNonIndexed();
+  g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+  return g;
+}
+
+let _bookGeo: THREE.BufferGeometry | null = null;
+function bookGeometry(): THREE.BufferGeometry {
+  if (_bookGeo) return _bookGeo;
+
+  // Upright book, SPINE faces the room (+z). Unit cube space; x = width, y =
+  // height, z = depth (+z room / -z into wall). The cover is built from SOLID
+  // THICK BOARDS (not thin box faces) so each board reads as a real slab with
+  // visible thickness from inside and outside — a left board, a right board, a
+  // tail (bottom) board, and the spine slab. The TOP is left open, so you look
+  // down into the cream page block recessed inside the board frame.
+  const T = 0.1; // cover-board thickness
+  const spineZ0 = 0.42; // spine slab front face at z = 0.5
+
+  const parts: THREE.BufferGeometry[] = [];
+  const mat: number[] = [];
+  const add = (g: THREE.BufferGeometry, m: number) => { parts.push(g); mat.push(m); };
+
+  // Spine slab: thin in z, full width/height. Its +z face shows the atlas; the
+  // whole slab is one group, but only +z is really seen (rest abuts boards).
+  add(boxBetween(-0.5, 0.5, -0.5, 0.5, spineZ0, 0.5), MAT_SPINE);
+  // Left + right cover boards (thick in x), running from back to the spine.
+  add(boxBetween(-0.5, -0.5 + T, -0.5, 0.5, -0.5, spineZ0), MAT_COVER);
+  add(boxBetween(0.5 - T, 0.5, -0.5, 0.5, -0.5, spineZ0), MAT_COVER);
+  // Tail board (thick in y) along the bottom, between the side boards.
+  add(boxBetween(-0.5 + T, 0.5 - T, -0.5, -0.5 + T, -0.5, spineZ0), MAT_COVER);
+  // Back board (thick in z) closing the rear so you don't see into the wall.
+  add(boxBetween(-0.5 + T, 0.5 - T, -0.5 + T, 0.5, -0.5, -0.5 + T), MAT_COVER);
+  // Cream page block, recessed just below the board rim (0.47 < 0.5) so the
+  // cover boards form a slight lip above the page-tops.
+  add(boxBetween(-0.5 + T, 0.5 - T, -0.5 + T, 0.47, -0.5 + T, spineZ0), MAT_PAGES);
+
+  const ni = parts.map((p) => p);
+  const merged = mergeGeometries(ni, false);
+  merged.clearGroups();
+  let start = 0;
+  ni.forEach((p, i) => {
+    const cnt = p.attributes.position.count;
+    merged.addGroup(start, cnt, mat[i]);
+    start += cnt;
+  });
+  _bookGeo = merged;
+  return merged;
+}
+
+// Material array indexed by MAT_* (spine atlas / cream pages / leather cover).
+let _bookMats: THREE.Material[] | null = null;
+function bookMats() {
+  if (_bookMats) return _bookMats;
+  const arr: THREE.Material[] = [];
+  arr[MAT_SPINE] = spineMat();
+  arr[MAT_PAGES] = pagesMat();
+  arr[MAT_COVER] = coverMat();
+  return (_bookMats = arr);
+}
+
 // Warm, faded leather/paper palette for spines.
 const SPINE_COLORS = ["#7b3f2a", "#8a6d3b", "#5c4332", "#6e5a3c", "#894f3a", "#4a5240", "#82724f", "#5a3b2e"];
 
 const BOOK_REACH = 4.0; // max camera-to-book distance (m) a click/hover counts — about one room
-const SHELF_BOTTOM = 0.35; // lowest shelf board height
-const SHELF_TOP = WALL_HEIGHT - 0.45; // highest reachable
+const SHELF_BOTTOM = 0.2; // lowest shelf board height (near floor)
+// highest shelf board: leave headroom for the tallest book (~0.54 m) so the top
+// row doesn't poke through the ceiling at WALL_HEIGHT.
+const SHELF_TOP = WALL_HEIGHT - 0.7;
 const BOOK_DEPTH = 0.22; // how far a book sticks out from the wall
 const SHELF_INSET = 0.05; // books sit slightly proud of the wall face
 const BOARD_THICK = 0.04;
@@ -112,6 +258,10 @@ export function Bookshelf({ mid, rotY, length, seed, tq, tr, wall }: Props) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const baseColors = useRef<THREE.Color[]>([]);
   const hovered = useRef<number | null>(null);
+  // Each shelf needs its OWN geometry instance so its per-book aCell attribute
+  // doesn't clobber other shelves' (the base geometry is a shared singleton;
+  // clone shares the static vertex buffers but lets us attach a unique aCell).
+  const bookGeo = useMemo(() => bookGeometry().clone(), []);
 
   // Brighten the hovered spine, restore the previous one.
   function highlight(id: number | null) {
@@ -140,12 +290,16 @@ export function Bookshelf({ mid, rotY, length, seed, tq, tr, wall }: Props) {
         const h = hash01(seed * 1000 + row * 50 + b);
         const h2 = hash01(seed * 2000 + row * 50 + b);
         const tut = isTutorialBook({ q: tq, r: tr, wall, shelf: row, book: b });
-        const bookH = tut ? 0.42 : 0.26 + h * 0.12; // tutorial book is taller
-        const bookW = tut ? slotW * 1.0 : slotW * (0.7 + h2 * 0.25);
+        // fill most of the ~0.6m row pitch so books dominate the wall (little wood shows)
+        const bookH = tut ? 0.48 : 0.4 + h * 0.08; // 0.40–0.48 m (fits the ~0.52 m row pitch)
+        // pack books nearly edge-to-edge so spines abut like a real shelf (only
+        // a thin gap), instead of skinny spines floating in wide gaps.
+        const bookW = tut ? slotW * 0.98 : slotW * (0.9 + h2 * 0.08);
+        const bookD = (tut ? BOOK_DEPTH * 1.15 : BOOK_DEPTH) * (0.9 + h * 0.18); // vary fore-edge depth
         // local position along the wall: x = left->right, y up, z = book depth (out of wall)
         const lx = -usableW / 2 + slotW * (b + 0.5);
         dummy.position.set(lx, y + bookH / 2, tut ? 0.03 : 0); // tutorial sticks out a touch
-        dummy.scale.set(bookW, bookH, tut ? BOOK_DEPTH * 1.15 : BOOK_DEPTH);
+        dummy.scale.set(bookW, bookH, bookD);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
         const c = tut
@@ -183,10 +337,10 @@ export function Bookshelf({ mid, rotY, length, seed, tq, tr, wall }: Props) {
             <boxGeometry args={[usableW + 0.1, BOARD_THICK, BOOK_DEPTH + 0.06]} />
           </mesh>
         ))}
-        {/* instanced book spines */}
+        {/* instanced books (one merged spine/pages/cover geometry per book) */}
         <instancedMesh
           ref={meshRef}
-          args={[undefined, undefined, count]}
+          args={[bookGeo, bookMats(), count]}
           castShadow
           onClick={(e: ThreeEvent<MouseEvent>) => {
             if (e.instanceId == null || e.distance > BOOK_REACH) return; // arm's-reach only
@@ -209,10 +363,8 @@ export function Bookshelf({ mid, rotY, length, seed, tq, tr, wall }: Props) {
             highlight(null);
             document.body.style.cursor = "";
           }}
-        >
-          <boxGeometry args={[1, 1, 1]} />
-          <primitive object={spineMat()} attach="material" />
-        </instancedMesh>
+        />
+
       </group>
     </group>
   );

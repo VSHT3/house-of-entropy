@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { RigidBody, CuboidCollider } from "@react-three/rapier";
 import { Edges } from "@react-three/drei";
 import { hexWalls, HEX_RADIUS, WALL_HEIGHT, WALL_THICKNESS, DOORWAY_WIDTH, DOORWAY_HEIGHT, isDoorBig, neighborOfBig } from "@/lib/babel";
-import { floorTex, wallTex, ceilingTex, doorTex } from "@/lib/textures";
+import { photoTex } from "@/lib/textures";
 import { Bookshelf } from "./Bookshelf";
 
 // Shared, build-once materials. One instance per surface type, reused by every
@@ -16,45 +16,60 @@ let _floorMat: THREE.MeshStandardMaterial | null = null;
 let _ceilMat: THREE.MeshStandardMaterial | null = null;
 function wallMat() {
   if (_wallMat) return _wallMat;
-  const t = wallTex();
+  // Real photographed wood plank wall (Poly Haven "wood_plank_wall", CC0). One
+  // tile per wall face; door pillars slice a matching sub-range (panelSliceGeo).
+  const t = photoTex("wall");
   return (_wallMat = new THREE.MeshStandardMaterial({
     map: t.map,
     normalMap: t.normalMap,
-    normalScale: new THREE.Vector2(1.4, 1.4), // deep panel grooves
-    roughness: 0.78, // satin walnut, not glossy orange
-    metalness: 0.02,
+    normalScale: new THREE.Vector2(1.0, 1.0),
+    roughnessMap: t.roughnessMap,
+    roughness: 1.0, // modulated by the map
+    metalness: 0.0,
   }));
 }
 function floorMat() {
   if (_floorMat) return _floorMat;
-  const t = floorTex();
+  // Real photographed marble tile floor (Poly Haven "marble_tiles", CC0). The
+  // roughness map gives polished/worn variation under the lamp. World-space UV
+  // (FLOOR_TILE) tiles it continuously across hex boundaries.
+  const t = photoTex("floor");
   return (_floorMat = new THREE.MeshStandardMaterial({
     map: t.map,
     normalMap: t.normalMap,
-    normalScale: new THREE.Vector2(1.5, 1.5), // chunky flagstone joints
-    roughness: 0.85, // worn matte stone
+    normalScale: new THREE.Vector2(1.0, 1.0),
+    roughnessMap: t.roughnessMap,
+    roughness: 1.0, // modulated by the map
   }));
 }
 function ceilMat() {
   if (_ceilMat) return _ceilMat;
-  const t = ceilingTex();
+  // Real photographed lacquered wood panelling (Poly Haven "wooden_panels").
+  // Repeat ~3× so panels read at a sane size across the ~9 m hex ceiling.
+  const t = photoTex("ceiling");
+  for (const m of [t.map, t.normalMap, t.roughnessMap]) m.repeat.set(3, 3);
   return (_ceilMat = new THREE.MeshStandardMaterial({
     map: t.map,
     normalMap: t.normalMap,
-    normalScale: new THREE.Vector2(1.0, 1.0),
-    roughness: 0.95,
+    normalScale: new THREE.Vector2(1.2, 1.2),
+    roughnessMap: t.roughnessMap,
+    roughness: 1.0,
   }));
 }
-// Doorway jambs/lintel: carved stone portal, distinct from the wood walls.
+// Doorway jambs/lintel: wood reveal matching the walls, so the opening reads as
+// cut through the panelling. Its own texture instance (separate repeat) but the
+// same plank-wood maps as the walls (copied into public/textures/door/).
 let _doorMat: THREE.MeshStandardMaterial | null = null;
 function doorMat() {
   if (_doorMat) return _doorMat;
-  const t = doorTex();
+  const t = photoTex("door");
+  for (const m of [t.map, t.normalMap, t.roughnessMap]) m.repeat.set(1, 2); // jambs are tall+narrow
   return (_doorMat = new THREE.MeshStandardMaterial({
     map: t.map,
     normalMap: t.normalMap,
-    normalScale: new THREE.Vector2(0.4, 0.4),
-    roughness: 0.92,
+    normalScale: new THREE.Vector2(0.8, 0.8),
+    roughnessMap: t.roughnessMap,
+    roughness: 1.0,
   }));
 }
 
