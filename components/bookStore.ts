@@ -5,6 +5,7 @@ import type { PageCoordBig, SearchResult } from "@/lib/library";
 import { addrHexToCoordBig } from "@/lib/library";
 import { isCenterBig } from "@/lib/babel";
 import { setOrigin } from "./worldStore";
+import { playPageTurn, setAmbienceDucked } from "@/lib/audio";
 
 // Where (local hex) the player should be teleported to after a search arrival, and a nonce
 // so <Player> fires the teleport once. We pick origin so the found hex is at a known local
@@ -37,11 +38,13 @@ export let tutorialSeen = false;
 export function openBook(coord: PageCoordBig) {
   current = { kind: "coord", coord: { ...coord, page: 0 } };
   tutorialSeen = true;
+  setAmbienceDucked(true);
   emit();
 }
 
 export function closeBook() {
   current = null;
+  setAmbienceDucked(false);
   emit();
 }
 
@@ -49,11 +52,13 @@ export function turnPage(delta: number) {
   if (!current) return;
   if (current.kind === "coord") {
     const page = Math.max(0, Math.min(409, current.coord.page + delta));
+    if (page !== current.coord.page) playPageTurn();
     current = { kind: "coord", coord: { ...current.coord, page } };
     emit();
   } else if (current.kind === "search") {
     // Flip through the book the search landed in; OpenBook regenerates each page from coord.
     const page = Math.max(0, Math.min(409, current.coord.page + delta));
+    if (page !== current.coord.page) playPageTurn();
     current = { ...current, coord: { ...current.coord, page } };
     emit();
   }

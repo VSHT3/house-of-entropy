@@ -80,41 +80,91 @@ export function OpenBook() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  // Keep the book pinned in front of the camera each frame.
+  // Keep the book pinned in front of the camera each frame. We pitch it back (top edge tilts
+  // away) and drop it below eyeline so the reader looks DOWN onto a held book — that viewing
+  // angle, not the page V alone, is what makes the spread read as a 3D object.
+  const tilt = useMemo(() => new THREE.Quaternion(), []);
   useFrame(() => {
     if (!group.current || !open) return;
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
-    const pos = camera.position.clone().add(dir.multiplyScalar(DIST));
+    const down = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion); // camera-up
+    const pos = camera.position
+      .clone()
+      .add(dir.multiplyScalar(DIST))
+      .addScaledVector(down, -0.28); // sit it lower, like held in front of the chest
     group.current.position.copy(pos);
-    group.current.quaternion.copy(camera.quaternion);
+    // camera orientation, then pitch the book ~32° back about its local X
+    tilt.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.55);
+    group.current.quaternion.copy(camera.quaternion).multiply(tilt);
   });
 
   if (!open || !text) return null;
 
   // renderOrder + depthTest:false make the book draw on top of the world (no wall clipping).
   const onTop = { depthTest: false, depthWrite: false } as const;
+  // Open-book V: each page leaf tilts away from the centre spine so the spread reads as a real
+  // 3D open volume rather than a flat card. The page block also has real thickness behind it.
+  const OPEN = 0.13; // half-angle of the V (radians); larger = more "open" book
+  const COVER_OVER = 0.06; // how far the leather cover oversizes the pages
+  const THICK = 0.10; // page-block thickness (the wad of pages)
 
   return (
-    <group ref={group} renderOrder={999}>
-      {/* book back board */}
-      <mesh renderOrder={999}>
-        <boxGeometry args={[PAGE_W * 2 + 0.12, PAGE_H + 0.12, 0.05]} />
-        <meshBasicMaterial color="#2c1f14" {...onTop} />
+    <group ref={group} renderOrder={998}>
+      {/* leather back board / cover — thick slab, lit so it catches the follow-lamp */}
+      <mesh position={[0, 0, -THICK / 2 - 0.02]} renderOrder={998}>
+        <boxGeometry args={[PAGE_W * 2 + COVER_OVER * 2, PAGE_H + COVER_OVER * 2, 0.06]} />
+        <meshStandardMaterial color="#3a281a" roughness={0.75} metalness={0.05} {...onTop} />
       </mesh>
-      {/* two page planes */}
-      <mesh position={[-PAGE_W / 2 - 0.015, 0, 0.03]} renderOrder={1000}>
-        <planeGeometry args={[PAGE_W, PAGE_H]} />
-        <meshBasicMaterial color="#e8e0cf" {...onTop} />
-      </mesh>
-      <mesh position={[PAGE_W / 2 + 0.015, 0, 0.03]} renderOrder={1000}>
-        <planeGeometry args={[PAGE_W, PAGE_H]} />
-        <meshBasicMaterial color="#e8e0cf" {...onTop} />
+      {/* spine ridge down the centre */}
+      <mesh position={[0, 0, 0.005]} renderOrder={999}>
+        <boxGeometry args={[0.05, PAGE_H + COVER_OVER * 2, THICK + 0.06]} />
+        <meshStandardMaterial color="#2c1d12" roughness={0.7} {...onTop} />
       </mesh>
 
-      {/* page text — one <Text> per line; query glyphs get a gold box behind them */}
-      <PageLines lines={text.left} marks={text.leftMark} x={-(PAGE_W + 0.015) + 0.02} />
-      <PageLines lines={text.right} marks={text.rightMark} x={0.015 + 0.02} />
+      {/* LEFT leaf: pivots at the spine (x=0), tilts open toward the reader */}
+      <group rotation={[0, OPEN, 0]}>
+        <Leaf side={-1} w={PAGE_W} h={PAGE_H} thick={THICK} onTop={onTop} />
+        <PageLines lines={text.left} marks={text.leftMark} x={-PAGE_W + 0.04} />
+      </group>
+      {/* RIGHT leaf */}
+      <group rotation={[0, -OPEN, 0]}>
+        <Leaf side={1} w={PAGE_W} h={PAGE_H} thick={THICK} onTop={onTop} />
+        <PageLines lines={text.right} marks={text.rightMark} x={0.04} />
+      </group>
+    </group>
+  );
+}
+
+// One page leaf: a thin slab of pages (paper edge visible) topped by the cream reading surface.
+// `side` is -1 (left) / +1 (right); the leaf grows outward from the spine at local x=0.
+function Leaf({
+  side,
+  w,
+  h,
+  thick,
+  onTop,
+}: {
+  side: number;
+  w: number;
+  h: number;
+  thick: number;
+  onTop: { depthTest: boolean; depthWrite: boolean };
+}) {
+  const cx = side * (w / 2 + 0.01);
+  return (
+    <group>
+      {/* the wad of pages (gives the leaf depth + a visible paper edge). Unlit basic material
+          so the lamp can't dim it to brown — pages stay bright white from every angle. */}
+      <mesh position={[cx, 0, -thick / 2]} renderOrder={999}>
+        <boxGeometry args={[w, h, thick]} />
+        <meshBasicMaterial color="#eeece6" {...onTop} />
+      </mesh>
+      {/* the printed reading surface, very slightly proud of the wad */}
+      <mesh position={[cx, 0, 0.001]} renderOrder={1000}>
+        <planeGeometry args={[w, h]} />
+        <meshBasicMaterial color="#fdfdfb" {...onTop} />
+      </mesh>
     </group>
   );
 }
@@ -149,16 +199,16 @@ function PageLines({ lines, marks, x }: { lines: string[]; marks: string[]; x: n
             {runs.map(([col, len], k) => (
               <mesh
                 key={k}
-                position={[x + (col + len / 2) * ADV, y - PAGE_FONT * 0.5, 0.038]}
-                renderOrder={1000}
+                position={[x + (col + len / 2) * ADV, y - PAGE_FONT * 0.5, 0.006]}
+                renderOrder={1001}
               >
                 <planeGeometry args={[len * ADV, PAGE_FONT * 1.05]} />
                 <meshBasicMaterial color="#f4d98b" depthTest={false} depthWrite={false} transparent opacity={0.8} />
               </mesh>
             ))}
             <Text
-              position={[x, y, 0.04]}
-              renderOrder={1001}
+              position={[x, y, 0.008]}
+              renderOrder={1002}
               font={MONO}
               fontSize={PAGE_FONT}
               color="#241c12"

@@ -8,7 +8,8 @@ import * as THREE from "three";
 import { playerPos } from "./playerState";
 import { isInputLocked, isFlying, isFreeFly, toggleFreeFly, useOpenState, useFlying, useFreeFly, useArrival } from "./bookStore";
 import { isChatFocused } from "@/lib/net";
-import { hexToWorld } from "@/lib/babel";
+import { hexToWorld, nearestCorridorX } from "@/lib/babel";
+import { initAudio, playFootstep } from "@/lib/audio";
 
 // Spawn in a ring room, not a sealed centre. Hex (1,0) is a ring hex.
 const SPAWN = hexToWorld(1, 0);
@@ -40,10 +41,14 @@ const HOP_WINDOW = 0.35; // s — forgiving grace period after landing to chain 
 const HOP_BOOST = 1.12; // speed multiplier on a chained hop (compounds across hops)
 
 const keys: Record<string, boolean> = {};
+// Set by pressing G; consumed in useFrame to snap the player onto the nearest infinite
+// straight corridor (a world z-axis line that threads door midpoints forever).
+let snapToCorridor = false;
 
 function useKeyboard() {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      void initAudio(); // first keypress is a valid gesture to boot the AudioContext
       // While typing in chat, let keystrokes reach the input and don't record movement.
       if (isChatFocused()) return;
       keys[e.code] = true;
@@ -51,13 +56,18 @@ function useKeyboard() {
       if (e.code === "Space") e.preventDefault();
       // F toggles noclip free-fly (ignored if a book/search input has focus).
       if (e.code === "KeyF" && !isInputLocked()) toggleFreeFly();
+      // G snaps onto the nearest infinite corridor and faces it (walk +z forever, no walls).
+      if (e.code === "KeyG" && !isInputLocked()) snapToCorridor = true;
     };
     const up = (e: KeyboardEvent) => (keys[e.code] = false);
+    const onPointer = () => void initAudio(); // a click is also a valid audio-unlock gesture
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
+    window.addEventListener("pointerdown", onPointer);
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
+      window.removeEventListener("pointerdown", onPointer);
     };
   }, []);
 }
@@ -101,6 +111,7 @@ export function Player() {
   const eyeRef = useRef(EYE_HEIGHT); // smoothed eye height (for crouch)
   const bobPhase = useRef(0); // head-bob phase, advanced by ground speed
   const bobAmt = useRef(0); // smoothed bob amplitude (eases in/out with movement)
+  const lastStepPhase = useRef(0); // bob phase at which we last played a footstep
 
   // Aim the camera at the golden tutorial book once on spawn.
   useEffect(() => {
@@ -130,6 +141,25 @@ export function Player() {
     const dt = Math.min(delta, 1 / 30); // clamp big frame gaps
     const now = state.clock.elapsedTime;
     const frozen = isInputLocked() || isChatFocused();
+
+    // G: snap the body's x onto the nearest corridor line, keep z, kill velocity, and aim
+    // due +z so a straight walk threads door midpoints forever. Works in walk or fly.
+    if (snapToCorridor) {
+      snapToCorridor = false;
+      const cur = rb.translation();
+      const cx = nearestCorridorX(cur.x);
+      if (isFreeFly()) {
+        rb.setNextKinematicTranslation({ x: cx, y: cur.y, z: cur.z });
+      } else {
+        rb.setTranslation({ x: cx, y: cur.y, z: cur.z }, true);
+        rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      }
+      playerPos.x = cx;
+      playerPos.z = cur.z;
+      camera.position.set(cx, camera.position.y, cur.z);
+      camera.rotation.order = "YXZ";
+      camera.rotation.set(0, Math.PI, 0); // face world +z
+    }
 
     // camera-relative horizontal basis
     camera.getWorldDirection(forward.current);
@@ -261,6 +291,17 @@ export function Player() {
     const hspeed = Math.hypot(vx, vz);
     const moving = grounded && hspeed > 0.4;
     bobPhase.current += hspeed * 1.9 * dt; // step cadence scales with speed
+    // Footstep on each half-stride: bobY = sin(bobPhase*2), so a foot lands every π/2 of phase.
+    // Fire as the phase crosses each boundary while actually walking on the ground.
+    const STRIDE = Math.PI / 2;
+    if (moving) {
+      if (bobPhase.current - lastStepPhase.current >= STRIDE) {
+        lastStepPhase.current += STRIDE;
+        playFootstep(crouching ? 0.4 : sprinting ? 1.0 : 0.7);
+      }
+    } else {
+      lastStepPhase.current = bobPhase.current; // reset so we don't burst on resuming
+    }
     const targetBob = moving ? Math.min(hspeed / SPEED, 1.4) * (sprinting ? 0.05 : 0.03) : 0;
     bobAmt.current += (targetBob - bobAmt.current) * (1 - Math.exp(-8 * dt));
     const bobY = Math.sin(bobPhase.current * 2) * bobAmt.current; // vertical (double freq)
