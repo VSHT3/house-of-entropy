@@ -45,6 +45,7 @@ export interface StatesMsg {
 export interface JoinMsg {
   type: "join";
   id: string;
+  name?: string; // newcomer's name if known at join time (may be "" until their hello arrives)
 }
 export interface LeaveMsg {
   type: "leave";

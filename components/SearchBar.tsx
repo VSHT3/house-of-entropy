@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { containsSearch, containsSearchWords, pageFromAddrHex } from "@/lib/library";
-import { startFlythrough, isInputLocked } from "./bookStore";
+import { startFlythrough, isInputLocked, setSearchOpen } from "./bookStore";
 
 // Press "/" to open a search box. Type any text; on Enter we find a page in the library
 // that contains it and fly there. Releases pointer lock while open.
@@ -27,26 +27,26 @@ export function SearchBar() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
+  // Mirror open state into the store so the Esc menu knows not to open over the search box.
+  useEffect(() => {
+    setSearchOpen(open);
+  }, [open]);
+
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
 
-  if (!open) {
-    return (
-      <div className="pointer-events-none absolute right-4 top-4 font-mono text-[11px] tracking-wider text-white/40">
-        press / to search
-      </div>
-    );
-  }
+  if (!open) return null;
 
   const submit = () => {
-    const v = value.trim();
-    // a "0x…" entry is treated as a raw address to travel to; anything else is text search
-    const res = /^0x[0-9a-f]+$/i.test(v)
-      ? pageFromAddrHex(v)
+    // a "0x…" entry is treated as a raw address to travel to; anything else is text search.
+    // Only trim for the address test — the search text keeps its leading/trailing spaces.
+    const trimmed = value.trim();
+    const res = /^0x[0-9a-f]+$/i.test(trimmed)
+      ? pageFromAddrHex(trimmed)
       : wordsMode
-      ? containsSearchWords(v)
-      : containsSearch(v);
+      ? containsSearchWords(value)
+      : containsSearch(value);
     setOpen(false);
     setValue("");
     if (res) startFlythrough(res);

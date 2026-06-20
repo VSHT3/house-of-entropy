@@ -60,14 +60,18 @@ wss.on("connection", (ws) => {
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
 
-  // Seed the newcomer with everyone already present (state + names).
+  // Seed the newcomer with everyone already present — including peers who haven't sent a state
+  // yet (no `last`), so a motionless reader still appears in the roster. Coords are simply
+  // omitted for them; the client tolerates that.
   const existing = [];
   for (const [pid, p] of peers) {
-    if (pid === id || !p.last) continue;
-    existing.push({ id: pid, name: p.name, ...p.last });
+    if (pid === id) continue;
+    existing.push({ id: pid, name: p.name, ...(p.last || {}) });
   }
   send(ws, { type: "welcome", id, peers: existing });
-  broadcast({ type: "join", id }, id);
+  // Carry the (current) name on join so already-present clients can list the newcomer even
+  // before it moves. It may be "" until the newcomer's `hello` arrives; a `name` follows.
+  broadcast({ type: "join", id, name: peers.get(id).name }, id);
 
   ws.on("message", (data) => {
     let msg;

@@ -84,9 +84,15 @@ export function nearestCorridorX(x: number): number {
 // gentle 60° turns. Every segment is one hex-step long (constant ~6.75m). The path is in
 // *local* render space (small floats), used purely for the camera animation — the real
 // destination is handled by the floating-origin rebase elsewhere.
-function _doorsLocal(q: number, r: number): number[] {
+// Doors of a LOCAL hex, evaluated against the TRUE (origin-shifted) coordinate so the topology
+// matches the rooms HexRoom actually renders (which use isDoorBig on true coords). The door
+// flower tiling depends on (q+2r)%3, which is NOT origin-invariant — so after a floating-origin
+// rebase the local frame and true frame disagree unless we test in true coords.
+function _doorsLocal(q: number, r: number, oq = 0n, or = 0n): number[] {
   const out: number[] = [];
-  for (let w = 0; w < 6; w++) if (isDoor(q, r, w)) out.push(w);
+  const tq = oq + BigInt(q);
+  const tr = or + BigInt(r);
+  for (let w = 0; w < 6; w++) if (isDoorBig(tq, tr, w)) out.push(w);
   return out;
 }
 function _doorMidWorld(q: number, r: number, w: number): [number, number] {
@@ -106,7 +112,9 @@ export function buildTravelPath(
   heading: [number, number],
   steps: number,
   turn = 1,
+  origin: [bigint, bigint] = [0n, 0n],
 ): TravelPath {
+  const [oq, or] = origin;
   const pts: [number, number][] = [];
   let q = startQ,
     r = startR,
@@ -126,7 +134,7 @@ export function buildTravelPath(
       hx = nx;
       hz = nz;
     }
-    const ds = _doorsLocal(q, r).filter((w) => w !== enterW);
+    const ds = _doorsLocal(q, r, oq, or).filter((w) => w !== enterW);
     if (ds.length === 0) break;
     const [cx, cz] = hexToWorld(q, r);
     let bestW = ds[0],
@@ -158,7 +166,7 @@ export function buildTravelPath(
     q += dq;
     r += dr;
     enterW = (bestW + 3) % 6;
-    if (isCenter(q, r)) break;
+    if (isCenterBig(oq + BigInt(q), or + BigInt(r))) break;
   }
   return { pts };
 }

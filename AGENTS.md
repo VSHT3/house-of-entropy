@@ -12,3 +12,10 @@ talks to it over `NEXT_PUBLIC_WS_URL` (inlined at build). Run both locally with 
 Positions cross the wire as **absolute** BigInt hex coords (decimal strings) + intra-hex offset;
 the receiver re-localises against its floating origin every frame. The BigInt magnitude guard
 must precede any `Number()` on a coord delta — see `memory/multiplayer.md`.
+
+**Roster / presence:** a peer must be registered the moment it joins, not on its first `state` —
+otherwise a motionless reader is invisible to everyone already connected. The relay `welcome`
+includes coord-less peers (`...(p.last||{})`) and `join` carries `name`; the client registers on
+`join` and `pushSample` skips the sample (but still registers the peer) when `tq/tr` are null —
+`BigInt(undefined)` would throw and abort the whole `welcome`, dropping every peer after it. The
+roster UI reads the reactive `useRoster()` snapshot (rebuilt in `emit()`).

@@ -5,6 +5,7 @@ import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useFlying, finishFlythrough } from "./bookStore";
 import { playerPos } from "./playerState";
+import { getOrigin } from "./worldStore";
 import { buildTravelPath, worldToHex } from "@/lib/babel";
 
 const DURATION = 3.4; // a touch longer so the turns read
@@ -45,7 +46,11 @@ export function FlyThrough() {
     const slant = Math.PI / 7;
     const hx = fwd.x * Math.cos(slant) - fwd.z * Math.sin(slant);
     const hz = fwd.x * Math.sin(slant) + fwd.z * Math.cos(slant);
-    const route = buildTravelPath(sq, sr, [hx, hz], STEPS, 1);
+    // Test doors/centres against TRUE coords (origin + local) so the route follows the rooms
+    // actually rendered after a floating-origin rebase — otherwise the 2nd+ search starts in a
+    // locally-"sealed" hex, the route comes back empty, and we fall back to a wall-piercing line.
+    const o = getOrigin();
+    const route = buildTravelPath(sq, sr, [hx, hz], STEPS, 1, [o.q, o.r]);
     const pts: THREE.Vector3[] = [new THREE.Vector3(camera.position.x, homeY.current, camera.position.z)];
     for (const [x, z] of route.pts) pts.push(new THREE.Vector3(x, homeY.current, z));
     // Fallback: if the route is degenerate (cornered), just push straight forward.

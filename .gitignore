@@ -44,3 +44,7 @@ next-env.d.ts
 
 # multiplayer relay (separate package)
 server/node_modules
+
+# local agent scratch
+.claude/
+boundary-address.txt

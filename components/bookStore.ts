@@ -26,6 +26,8 @@ type OpenState =
 let current: OpenState = null;
 let flying = false; // true during the search "flythrough" travel animation
 let freeFly = false; // noclip free-fly: detach gravity/collision, roam the camera with WASD+QE
+let menuOpen = false; // the Esc menu (help / change name / players) is up
+let searchOpen = false; // the "/" search box is up (so Esc closes it, not opens the menu)
 let pending: SearchResult | null = null; // result to reveal when the flythrough ends
 const listeners = new Set<() => void>();
 
@@ -123,14 +125,39 @@ export function isFreeFly(): boolean {
   return freeFly;
 }
 
+// --- Esc menu (help / change name / players) --------------------------------
+export function openMenu() {
+  if (menuOpen) return;
+  menuOpen = true;
+  if (typeof document !== "undefined" && document.pointerLockElement) document.exitPointerLock();
+  emit();
+}
+export function closeMenu() {
+  if (!menuOpen) return;
+  menuOpen = false;
+  emit();
+}
+export function isMenuOpen(): boolean {
+  return menuOpen;
+}
+export function useMenuOpen(): boolean {
+  return useSyncExternalStore(subscribe, () => menuOpen, () => menuOpen);
+}
+export function setSearchOpen(v: boolean) {
+  searchOpen = v;
+}
+export function isSearchOpen(): boolean {
+  return searchOpen;
+}
+
 // --- reads ------------------------------------------------------------------
 
 export function isBookOpen(): boolean {
   return current !== null;
 }
-// Movement/look are locked while a book is open OR we're flying.
+// Movement/look are locked while a book is open, we're flying, or the menu is up.
 export function isInputLocked(): boolean {
-  return current !== null || flying;
+  return current !== null || flying || menuOpen;
 }
 
 function subscribe(cb: () => void) {

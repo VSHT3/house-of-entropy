@@ -56,6 +56,10 @@ const listeners = new Set<() => void>();
 function emit() {
   // snapshot the reactive bits so useSyncExternalStore sees new references
   peerIdsSnapshot = Array.from(peers.keys());
+  rosterSnapshot = Array.from(peers.values()).map((p) => {
+    const last = p.buf[p.buf.length - 1];
+    return { id: p.id, name: p.name, tq: last ? last.tq : null, tr: last ? last.tr : null };
+  });
   for (const l of listeners) l();
 }
 function subscribe(cb: () => void) {
@@ -94,8 +98,13 @@ function pushSample(s: ServerState, rt: number) {
   }
   peer.flying = !!s.flying;
   if (s.name) peer.name = s.name;
-  peer.buf.push(sampleFrom(s, rt));
-  if (peer.buf.length > BUF_CAP) peer.buf.shift();
+  // A `welcome` may carry peers whose `last` is still null (they haven't sent a state yet), so
+  // tq/tr are undefined. Register the peer (so it shows in the roster) but don't push a sample —
+  // BigInt(undefined) would throw and abort the whole message, dropping every peer after it.
+  if (s.tq != null && s.tr != null) {
+    peer.buf.push(sampleFrom(s, rt));
+    if (peer.buf.length > BUF_CAP) peer.buf.shift();
+  }
   if (isNew) emit();
 }
 
@@ -113,8 +122,15 @@ function handle(msg: ServerMsg) {
       for (const s of msg.players) pushSample(s, now);
       break; // positions are read per-frame, not via React — no emit
     }
-    case "join":
-      break; // avatar appears once its first state arrives
+    case "join": {
+      // Register the peer immediately (even before it moves) so it shows in the roster. The
+      // avatar still only renders once a position sample arrives (RemoteAvatars hides empty bufs).
+      if (msg.id !== myId && !peers.has(msg.id)) {
+        peers.set(msg.id, { id: msg.id, name: msg.name ?? "", flying: false, buf: [] });
+        emit();
+      }
+      break;
+    }
     case "leave":
       if (peers.delete(msg.id)) emit();
       break;
@@ -209,7 +225,42 @@ export function sendState(s: Omit<StateMsg, "type">) {
 
 export function setName(name: string) {
   pendingName = name;
+  if (typeof localStorage !== "undefined") localStorage.setItem("hoe-name", name);
   sendRaw({ type: "hello", name });
+}
+
+export function getMyName(): string {
+  if (typeof localStorage !== "undefined") return localStorage.getItem("hoe-name") ?? "";
+  return pendingName ?? "";
+}
+
+// A roster row: display name + latest absolute true hex coord (or null if no sample yet).
+export interface RosterEntry {
+  id: string;
+  name: string;
+  tq: bigint | null;
+  tr: bigint | null;
+}
+export function getRoster(): RosterEntry[] {
+  const out: RosterEntry[] = [];
+  for (const p of peers.values()) {
+    const last = p.buf[p.buf.length - 1];
+    out.push({ id: p.id, name: p.name, tq: last ? last.tq : null, tr: last ? last.tr : null });
+  }
+  return out;
+}
+
+// Reactive roster membership: re-snapshotted on every emit (join/leave/welcome/name), so a
+// component using this re-renders when peers come and go. Distances still need a periodic tick
+// since positions arrive via `states` (which intentionally doesn't emit).
+let rosterSnapshot: RosterEntry[] = [];
+export function useRoster(): RosterEntry[] {
+  return useSyncExternalStore(subscribe, () => rosterSnapshot, () => rosterSnapshot);
+}
+
+// connection state, for an honest "you're offline / alone" roster message
+export function isConnected(): boolean {
+  return ws !== null && ws.readyState === WebSocket.OPEN;
 }
 
 export function sendChat(text: string) {

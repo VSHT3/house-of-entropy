@@ -92,34 +92,37 @@ export function OpenBook() {
     const pos = camera.position
       .clone()
       .add(dir.multiplyScalar(DIST))
-      .addScaledVector(down, -0.28); // sit it lower, like held in front of the chest
+      .addScaledVector(down, -0.16); // sit slightly low, like held up to read
     group.current.position.copy(pos);
-    // camera orientation, then pitch the book ~32° back about its local X
-    tilt.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.55);
+    // camera orientation, then a gentle pitch back about its local X. Small angle keeps the
+    // spread reading nearly flat-on (legible, no strong trapezoid keystone) while still 3D.
+    tilt.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.22);
     group.current.quaternion.copy(camera.quaternion).multiply(tilt);
   });
 
   if (!open || !text) return null;
 
   // renderOrder + depthTest:false make the book draw on top of the world (no wall clipping).
-  const onTop = { depthTest: false, depthWrite: false } as const;
+  // fog:false keeps the unlit page-white from being washed brown by the scene fog at DIST.
+  const onTop = { depthTest: false, depthWrite: false, fog: false } as const;
   // Open-book V: each page leaf tilts away from the centre spine so the spread reads as a real
   // 3D open volume rather than a flat card. The page block also has real thickness behind it.
-  const OPEN = 0.13; // half-angle of the V (radians); larger = more "open" book
+  const OPEN = 0.06; // half-angle of the V (radians); small = nearly-flat, aligned spread
   const COVER_OVER = 0.06; // how far the leather cover oversizes the pages
   const THICK = 0.10; // page-block thickness (the wad of pages)
 
   return (
-    <group ref={group} renderOrder={998}>
-      {/* leather back board / cover — thick slab, lit so it catches the follow-lamp */}
-      <mesh position={[0, 0, -THICK / 2 - 0.02]} renderOrder={998}>
+    <group ref={group}>
+      {/* leather back board / cover — UNLIT basic (the follow-lamp must not tint it brown over
+          the pages). Sits well behind the page block, lowest renderOrder. */}
+      <mesh position={[0, 0, -THICK / 2 - 0.02]} renderOrder={990}>
         <boxGeometry args={[PAGE_W * 2 + COVER_OVER * 2, PAGE_H + COVER_OVER * 2, 0.06]} />
-        <meshStandardMaterial color="#3a281a" roughness={0.75} metalness={0.05} {...onTop} />
+        <meshBasicMaterial color="#3a281a" toneMapped={false} {...onTop} />
       </mesh>
       {/* spine ridge down the centre */}
-      <mesh position={[0, 0, 0.005]} renderOrder={999}>
+      <mesh position={[0, 0, -0.01]} renderOrder={991}>
         <boxGeometry args={[0.05, PAGE_H + COVER_OVER * 2, THICK + 0.06]} />
-        <meshStandardMaterial color="#2c1d12" roughness={0.7} {...onTop} />
+        <meshBasicMaterial color="#2c1d12" toneMapped={false} {...onTop} />
       </mesh>
 
       {/* LEFT leaf: pivots at the spine (x=0), tilts open toward the reader */}
@@ -134,6 +137,26 @@ export function OpenBook() {
       </group>
     </group>
   );
+}
+
+// Gutter shadow texture: a horizontal gradient, opaque-brown at u=1 fading to fully
+// transparent at u=0. Built once. Placed so its dark end hugs the spine on each leaf.
+let _gutterTex: THREE.CanvasTexture | null = null;
+function gutterTex(): THREE.CanvasTexture {
+  if (_gutterTex) return _gutterTex;
+  const c = document.createElement("canvas");
+  c.width = 64;
+  c.height = 4;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createLinearGradient(0, 0, 64, 0);
+  g.addColorStop(0, "rgba(40,28,18,0)");
+  g.addColorStop(0.7, "rgba(40,28,18,0.15)");
+  g.addColorStop(1, "rgba(30,20,12,0.85)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 4);
+  _gutterTex = new THREE.CanvasTexture(c);
+  _gutterTex.colorSpace = THREE.SRGBColorSpace;
+  return _gutterTex;
 }
 
 // One page leaf: a thin slab of pages (paper edge visible) topped by the cream reading surface.
@@ -155,15 +178,23 @@ function Leaf({
   return (
     <group>
       {/* the wad of pages (gives the leaf depth + a visible paper edge). Unlit basic material
-          so the lamp can't dim it to brown — pages stay bright white from every angle. */}
+          so the lamp can't dim it to brown — pages stay bright from every angle.
+          toneMapped:false keeps the page from being crushed by the renderer's tone curve. */}
       <mesh position={[cx, 0, -thick / 2]} renderOrder={999}>
         <boxGeometry args={[w, h, thick]} />
-        <meshBasicMaterial color="#eeece6" {...onTop} />
+        <meshBasicMaterial color="#e7e0cd" toneMapped={false} {...onTop} />
       </mesh>
-      {/* the printed reading surface, very slightly proud of the wad */}
-      <mesh position={[cx, 0, 0.001]} renderOrder={1000}>
+      {/* the printed reading surface — warm ivory, not clinical white. */}
+      <mesh position={[cx, 0, 0.002]} renderOrder={1000}>
         <planeGeometry args={[w, h]} />
-        <meshBasicMaterial color="#fdfdfb" {...onTop} />
+        <meshBasicMaterial color="#f7f1e2" toneMapped={false} {...onTop} />
+      </mesh>
+      {/* soft gutter shadow: paper curves into the spine, so darken the inner margin with a
+          horizontal gradient (dark at the spine, fading out toward the page). scale.x flips the
+          gradient so the dark end always hugs the spine on either leaf. */}
+      <mesh position={[side * 0.09, 0, 0.003]} scale={[-side, 1, 1]} renderOrder={1001}>
+        <planeGeometry args={[0.18, h]} />
+        <meshBasicMaterial map={gutterTex()} transparent opacity={0.55} toneMapped={false} {...onTop} />
       </mesh>
     </group>
   );
@@ -203,7 +234,7 @@ function PageLines({ lines, marks, x }: { lines: string[]; marks: string[]; x: n
                 renderOrder={1001}
               >
                 <planeGeometry args={[len * ADV, PAGE_FONT * 1.05]} />
-                <meshBasicMaterial color="#f4d98b" depthTest={false} depthWrite={false} transparent opacity={0.8} />
+                <meshBasicMaterial color="#f4d98b" depthTest={false} depthWrite={false} fog={false} transparent opacity={0.8} />
               </mesh>
             ))}
             <Text
@@ -217,6 +248,7 @@ function PageLines({ lines, marks, x }: { lines: string[]; marks: string[]; x: n
               textAlign="left"
               lineHeight={1.18}
               material-depthTest={false}
+              material-fog={false}
             >
               {ln}
             </Text>

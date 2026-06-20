@@ -6,7 +6,7 @@ import { PointerLockControls } from "@react-three/drei";
 import { RigidBody, CapsuleCollider, useRapier, type RapierRigidBody } from "@react-three/rapier";
 import * as THREE from "three";
 import { playerPos } from "./playerState";
-import { isInputLocked, isFlying, isFreeFly, toggleFreeFly, useOpenState, useFlying, useFreeFly, useArrival } from "./bookStore";
+import { isInputLocked, isFlying, isFreeFly, toggleFreeFly, useOpenState, useFlying, useFreeFly, useArrival, useMenuOpen } from "./bookStore";
 import { isChatFocused } from "@/lib/net";
 import { hexToWorld, nearestCorridorX } from "@/lib/babel";
 import { initAudio, playFootstep } from "@/lib/audio";
@@ -79,7 +79,8 @@ export function Player() {
   const reading = useOpenState() !== null;
   const flying = useFlying();
   const freeFly = useFreeFly();
-  const locked = reading || flying; // freeze controls while reading or travelling (NOT free-fly)
+  const menuOpen = useMenuOpen();
+  const locked = reading || flying || menuOpen; // freeze + release pointer while reading, travelling, or in menu
   const arrival = useArrival();
   useKeyboard();
 
@@ -111,7 +112,7 @@ export function Player() {
   const eyeRef = useRef(EYE_HEIGHT); // smoothed eye height (for crouch)
   const bobPhase = useRef(0); // head-bob phase, advanced by ground speed
   const bobAmt = useRef(0); // smoothed bob amplitude (eases in/out with movement)
-  const lastStepPhase = useRef(0); // bob phase at which we last played a footstep
+  const stepDist = useRef(0); // distance accumulator (m) for footstep cadence
 
   // Aim the camera at the golden tutorial book once on spawn.
   useEffect(() => {
@@ -290,17 +291,18 @@ export function Player() {
     // grows when sprinting. Off while airborne so jumps read clean.
     const hspeed = Math.hypot(vx, vz);
     const moving = grounded && hspeed > 0.4;
-    bobPhase.current += hspeed * 1.9 * dt; // step cadence scales with speed
-    // Footstep on each half-stride: bobY = sin(bobPhase*2), so a foot lands every π/2 of phase.
-    // Fire as the phase crosses each boundary while actually walking on the ground.
-    const STRIDE = Math.PI / 2;
+    bobPhase.current += hspeed * 1.9 * dt; // head-bob phase scales with speed (visual only)
+    // Footsteps fire per distance travelled, not per bob cycle — one step every STRIDE_LEN
+    // metres. ~1.6 m stride => a normal walk lands ~2 steps/s instead of a locomotive clatter.
+    const STRIDE_LEN = 1.6;
     if (moving) {
-      if (bobPhase.current - lastStepPhase.current >= STRIDE) {
-        lastStepPhase.current += STRIDE;
-        playFootstep(crouching ? 0.4 : sprinting ? 1.0 : 0.7);
+      stepDist.current += hspeed * dt;
+      if (stepDist.current >= STRIDE_LEN) {
+        stepDist.current -= STRIDE_LEN;
+        playFootstep(crouching ? 0.25 : sprinting ? 0.6 : 0.4);
       }
     } else {
-      lastStepPhase.current = bobPhase.current; // reset so we don't burst on resuming
+      stepDist.current = 0; // reset so we don't burst on resuming
     }
     const targetBob = moving ? Math.min(hspeed / SPEED, 1.4) * (sprinting ? 0.05 : 0.03) : 0;
     bobAmt.current += (targetBob - bobAmt.current) * (1 - Math.exp(-8 * dt));

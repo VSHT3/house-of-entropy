@@ -85,8 +85,9 @@ function playBuffer(buf: AudioBuffer | undefined, gain: number, rate = 1) {
 export function playFootstep(intensity = 1) {
   if (!steps.length) return;
   const buf = steps[(Math.random() * steps.length) | 0];
-  const rate = 0.92 + Math.random() * 0.16;
-  playBuffer(buf, 0.35 * intensity, rate);
+  // Higher base rate lifts the pitch off the bassy "locomotive" thud; jitter keeps it organic.
+  const rate = 1.15 + Math.random() * 0.2;
+  playBuffer(buf, 0.22 * intensity, rate);
 }
 
 export function playPageTurn() {
