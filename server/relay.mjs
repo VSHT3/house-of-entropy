@@ -22,8 +22,19 @@ const MAX_CHAT = 280;
 const CHAT_BURST = 5; // max chat msgs per window
 const CHAT_WINDOW_MS = 5000;
 
-/** @type {Map<string, {ws: import('ws').WebSocket, last: object|null, name: string, chatTimes: number[]}>} */
+// `visible` gates a peer into the roster/avatars. A bare socket (port scanner, uptime probe,
+// crawler) opens a connection but never speaks the protocol — it must NOT show up as a peer.
+// A real client always sends `hello` (its name) on connect and `state` ~15 Hz; either flips
+// `visible` true and triggers the deferred `join`. Until then the peer is held silently.
+/** @type {Map<string, {ws: import('ws').WebSocket, last: object|null, name: string, chatTimes: number[], visible: boolean}>} */
 const peers = new Map();
+
+// Promote a peer to visible on its first real protocol message and announce it once.
+const reveal = (id, me) => {
+  if (me.visible) return;
+  me.visible = true;
+  broadcast({ type: "join", id, name: me.name }, id);
+};
 
 // Health-check HTTP server (Coolify pings it); WS shares the same port.
 const http = createServer((_req, res) => {
@@ -56,22 +67,21 @@ wss.on("connection", (ws) => {
     return;
   }
   const id = randomUUID().slice(0, 8);
-  peers.set(id, { ws, last: null, name: "", chatTimes: [] });
+  peers.set(id, { ws, last: null, name: "", chatTimes: [], visible: false });
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
 
-  // Seed the newcomer with everyone already present — including peers who haven't sent a state
+  // Seed the newcomer with everyone already VISIBLE — including peers who haven't sent a state
   // yet (no `last`), so a motionless reader still appears in the roster. Coords are simply
-  // omitted for them; the client tolerates that.
+  // omitted for them; the client tolerates that. Unidentified sockets (scanners) are skipped.
   const existing = [];
   for (const [pid, p] of peers) {
-    if (pid === id) continue;
+    if (pid === id || !p.visible) continue;
     existing.push({ id: pid, name: p.name, ...(p.last || {}) });
   }
   send(ws, { type: "welcome", id, peers: existing });
-  // Carry the (current) name on join so already-present clients can list the newcomer even
-  // before it moves. It may be "" until the newcomer's `hello` arrives; a `name` follows.
-  broadcast({ type: "join", id, name: peers.get(id).name }, id);
+  // No `join` broadcast yet: this peer is announced only once it identifies (hello/state) via
+  // reveal(). A socket that never speaks the protocol stays invisible to everyone.
 
   ws.on("message", (data) => {
     let msg;
@@ -83,8 +93,10 @@ wss.on("connection", (ws) => {
       // Server stamps id; clients never assert their own id (no spoofing peers).
       const { tq, tr, ox, oz, y, yaw, pitch, flying, t } = msg;
       me.last = { tq, tr, ox, oz, y, yaw, pitch, flying, t };
+      reveal(id, me); // a moving client is real — announce it if not already
     } else if (msg.type === "hello") {
       me.name = sanitize(msg.name, MAX_NAME);
+      reveal(id, me); // first hello reveals; the join already carries the name
       broadcast({ type: "name", id, name: me.name });
     } else if (msg.type === "chat") {
       const now = Date.now();
@@ -97,8 +109,10 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    const wasVisible = peers.get(id)?.visible;
     peers.delete(id);
-    broadcast({ type: "leave", id });
+    // Only announce a leave for peers clients actually saw; a silent scanner never joined.
+    if (wasVisible) broadcast({ type: "leave", id });
   });
   ws.on("error", () => { /* close handler does cleanup */ });
 });
