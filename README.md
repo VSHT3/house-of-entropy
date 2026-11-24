@@ -2,6 +2,10 @@
 
 *Walk Borges' Library of Babel in first-person 3D — and you are not alone in it.*
 
+**[Walk through it at houseofentropy.dev](https://houseofentropy.dev)**
+
+![The starting room: a wall of books in a wooden hexagonal hall](docs/screenshot.jpg)
+
 Inspired by Jorge Luis Borges' 1941 story *La biblioteca de Babel*, the Library contains
 every possible book. You wander an endless honeycomb of dim hexagonal rooms, pull books off
 the shelves, and read pages whose text is **computed on demand** — nothing is stored. Every
